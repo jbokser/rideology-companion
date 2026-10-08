@@ -1,0 +1,5 @@
+Title,"Ride “ú–{"
+elapsed_msec,water_temperature(),wheel_speed(km/h),engine_RPM,gear_position,gps_latitude,gps_longitude
+0,80,36,2000,1,-34,-58
+1000,90,72,3000,Error,-34.001,-58
+2000,85,20,1500,2,-34.002,-58
