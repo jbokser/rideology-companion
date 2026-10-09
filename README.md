@@ -48,7 +48,7 @@ The minimum supported Android version is Android 7.0 (API 24). The project uses 
 ### Getting Started
 
 1. Open the repository in Android Studio.
-2. Install Android SDK Platform 37 through the SDK Manager.
+2. Install Android SDK Platform 37 through the SDK Manager (package `platforms;android-37.0`) and Build Tools 37.0.0 (package `build-tools;37.0.0`).
 3. Allow Gradle to synchronize and download the required dependencies.
 4. Select an emulator or device running Android 7.0 or later and run the `app` configuration.
 
