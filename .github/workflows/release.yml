@@ -1,0 +1,99 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-37 build-tools;37.0.0'
+
+      - name: Test release validation
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Test and build release APK
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleRelease
+
+      - name: Validate tag against built version
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          python3 scripts/release_metadata.py
+          app/build/outputs/apk/release/output-metadata.json
+          "$RELEASE_TAG" --output "$GITHUB_OUTPUT"
+
+      - name: Sign and verify APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          APK_FILE: ${{ steps.metadata.outputs.apk }}
+          ASSET_FILE: ${{ steps.metadata.outputs.asset }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required signing secret: $name"
+              exit 1
+            fi
+          done
+          umask 077
+          signing_dir=$(mktemp -d "$RUNNER_TEMP/apk-signing.XXXXXX")
+          trap 'rm -rf "$signing_dir"' EXIT
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$signing_dir/release.jks"
+          tools="$ANDROID_HOME/build-tools/37.0.0"
+          mkdir -p dist
+          "$tools/zipalign" -P 16 -f 4 "app/build/outputs/apk/release/$APK_FILE" "$signing_dir/aligned.apk"
+          "$tools/apksigner" sign --ks "$signing_dir/release.jks" \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "dist/$ASSET_FILE" "$signing_dir/aligned.apk"
+          "$tools/apksigner" verify --verbose "dist/$ASSET_FILE"
+          "$tools/zipalign" -c -P 16 4 "dist/$ASSET_FILE"
+
+      - name: Create GitHub release with APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ steps.metadata.outputs.prerelease }}
+          ASSET_FILE: ${{ steps.metadata.outputs.asset }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" "dist/$ASSET_FILE" \
+            --verify-tag --generate-notes --title "Rideology Companion $RELEASE_TAG" \
+            "${flags[@]}"

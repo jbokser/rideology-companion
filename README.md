@@ -182,6 +182,38 @@ Run instrumented tests with a connected device or running emulator:
 
 Unit tests cover parsing, missing and invalid fields, timing gaps, stopped rides, maxima, and coordinate formatting. Instrumented tests cover CSV attachment reception, summary presentation, activity recreation, missing attachments, clipboard copying, the plain-text payload passed to the Android Sharesheet, and scrollbar touch target size, dragging, track taps, and accessibility adjustment. A synthetic CSV fixture is included only in debug builds at `app/src/debug/res/raw/sample_ride.csv`.
 
+## GitHub Releases
+
+The [release workflow](.github/workflows/release.yml) runs when a tag matching `v*` is pushed. It installs JDK 25 and Android SDK 37, runs local unit tests, builds the release APK, validates the tag against the generated APK metadata, then aligns, signs, and verifies the APK before creating a GitHub release with automatically generated notes and the signed APK attached. Signing is performed by the workflow; local `assembleRelease` builds remain unsigned.
+
+The tag must be exactly `v` followed by `versionName` from `app/build.gradle.kts`. Numeric versions such as `0.2.0` create normal releases. Versions ending in `b`, `b` plus a number, `-beta`, or `-beta.` plus a number create prereleases, for example `v0.1b` or `v0.2.0-beta.1`. Other suffixes are rejected rather than published as stable releases. Prereleases are not marked as the latest release.
+
+Configure these repository secrets under **Settings → Secrets and variables → Actions** before pushing a release tag:
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | Base64-encoded release keystore file. |
+| `ANDROID_KEYSTORE_PASSWORD` | Keystore password. |
+| `ANDROID_KEY_ALIAS` | Alias of the release signing key. |
+| `ANDROID_KEY_PASSWORD` | Password of that key; use the keystore password if they are the same. |
+
+Use an existing release signing key if the app has already been distributed. Otherwise create a key once with Android Studio's **Generate Signed Bundle / APK** wizard and keep a secure backup. Future APK updates must use the same signing key. Never commit the keystore or passwords. To encode the keystore on Linux, run `base64 -w 0 /path/to/release.jks` and store the output directly in the secret. The workflow uses GitHub's automatic `GITHUB_TOKEN`; no personal access token is required. Repository or organization policies must allow the workflow's `contents: write` permission to create releases.
+
+For each release:
+
+1. Update `versionName` and increment `versionCode` in `app/build.gradle.kts`.
+2. Commit and push the changes, including the workflow for the first release.
+3. Create and push the matching tag, for example:
+
+```bash
+git tag -a v0.2.0-beta.1 -m "Release v0.2.0-beta.1"
+git push origin v0.2.0-beta.1
+```
+
+The example assumes `versionName = "0.2.0-beta.1"`. Track the run in GitHub's **Actions** tab and download `rideology-companion-v0.2.0-beta.1.apk` from **Releases** after success. A missing secret, mismatched tag, failing test, or invalid signature prevents publication. Existing releases are not overwritten; reruns cannot replace a published release. Instrumented tests still require a device or emulator and are not run by this workflow.
+
+Run the release metadata checks locally with `python3 -m unittest discover -s scripts -p 'test_*.py'`.
+
 ## Project Structure
 
 - `app/src/main/java/com/jbokser/rideology_companion/MainActivity.kt`: application entry point and current screen.

@@ -13,3 +13,9 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Local signing material and release tooling output
+*.jks
+*.keystore
+/dist/
+__pycache__/
