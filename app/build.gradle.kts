@@ -13,8 +13,8 @@ android {
         applicationId = "com.jbokser.rideology_companion"
         minSdk = 24
         targetSdk = 37
-        versionCode = 2
-        versionName = "0.1b1"
+        versionCode = 3
+        versionName = "0.1b2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
