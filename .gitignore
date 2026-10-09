@@ -19,3 +19,6 @@ local.properties
 *.keystore
 /dist/
 __pycache__/
+
+# Locally generated release artifacts
+/app/release/
