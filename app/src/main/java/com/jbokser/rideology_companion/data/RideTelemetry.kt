@@ -27,7 +27,25 @@ data class RideTelemetry(
     val distanceKm: Double get() = points.lastOrNull()?.distanceKm ?: 0.0
 }
 
+data class DistanceAxis(val scale: ChartScale, val unit: String, val unitsPerKm: Double) {
+    val domainKm: Double get() = scale.maximum / unitsPerKm
+}
+
 object RideChartCalculations {
+    /** Uses integer 5/10 steps and switches short rides to meters. */
+    fun distanceAxis(distanceKm: Double, maximumTicks: Int = 6): DistanceAxis {
+        val unitsPerKm = if (distanceKm < 15) 1000.0 else 1.0
+        val maximum = distanceKm.coerceAtLeast(0.0) * unitsPerKm
+        val intervals = (maximumTicks - 1).coerceIn(3, 10)
+        var step = 5.0
+        while (ceil(maximum / step) > intervals) {
+            val magnitude = 10.0.pow(floor(log10(step)))
+            step = if (step / magnitude >= 5) magnitude * 10 else magnitude * 5
+        }
+        val count = ceil(maximum / step).coerceAtLeast(3.0)
+        return DistanceAxis(ChartScale(count * step, step), if (unitsPerKm == 1000.0) "m" else "km", unitsPerKm)
+    }
+
     fun distribution(telemetry: RideTelemetry): List<SpeedDistanceBin> {
         val eligible = telemetry.intervals.filter { it.endingSpeed != null && it.endingSpeed >= 0 && it.distanceKm > 0 }
         val highest = eligible.maxOfOrNull { floor(it.endingSpeed!! / 20).toInt() } ?: return emptyList()

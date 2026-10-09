@@ -10,22 +10,42 @@ class RideLogTest {
     private fun analyze(csv: String) = RideAnalyzer.analyze(RideCsvParser.parse(StringReader(csv.trimIndent())))
 
     @Test
-    fun sharedMessageUsesBoldHeadingsAndAlignedMonospaceTable() {
+    fun summaryExportsOnlySummaryAndGearTableAlignsNumbers() {
         val ride = analyze("Title,Message ride\nelapsed_msec,engine_RPM,wheel_speed(km/h),gear_position\n0,12000,179,1\n1000,900,9,2")
         val message = RideReport.messageText(ride)
         assertTrue(message.startsWith("*Message ride*\n"))
         assertTrue(message.contains("*Max engine speed*: 12000 rpm"))
-        assertTrue(message.contains("*Max for each gear*\n```\n"))
-        val table = message.substringAfter("```\n").substringBefore("\n```").lines()
+        assertFalse(message.contains("Max for each gear"))
+        assertFalse(message.contains("Locations"))
+        assertFalse(message.contains("Starting point"))
+        assertFalse(message.contains("Data notes"))
+        val table = RideReport.gearTable(ride)
         assertEquals(3, table.size)
         assertEquals(1, table.map { it.length }.distinct().size)
-        assertTrue(table.contains("1     12000  179.0"))
+        assertTrue(table.contains("   1  12000  179.0"))
         val copiedText = RideReport.plainText(ride)
-        assertEquals(2, copiedText.lines().count { it == "```" })
-        assertEquals(2, message.lines().count { it == "```" })
-        assertEquals(table, copiedText.substringAfter("```\n").substringBefore("\n```").lines())
+        assertFalse(copiedText.contains("Max for each gear"))
+        assertFalse(copiedText.contains("maps"))
         assertFalse(copiedText.contains("*Max engine speed*"))
         assertTrue(copiedText.startsWith("Message ride\n"))
+    }
+
+    @Test
+    fun locationExportsIncludeOnlyLocationsAndAvailableNeighborhoods() {
+        val ride = analyze("Title,Location ride\nelapsed_msec,wheel_speed(km/h),gps_latitude,gps_longitude\n0,10,-34.1234567,-58.1234567\n1000,60,-35,-59")
+        val text = RideReport.locationsText(ride, mapOf(ride.start!! to LocationDetails(street = "Calle Perú", houseNumber = "123", neighborhood = "Barrio Norte", city = "Buenos Aires")), true)
+        assertTrue(text.contains("*Locations*"))
+        assertTrue(text.contains("Neighborhood: Barrio Norte"))
+        assertTrue(text.contains("Address: Calle Perú 123"))
+        assertTrue(text.contains("City: Buenos Aires"))
+        assertTrue(text.contains("query=-34.1234567,-58.1234567"))
+        assertFalse(text.contains("Max for each gear"))
+        assertFalse(text.contains("Max wheel speed"))
+        assertFalse(text.contains("Photon"))
+        assertFalse(text.contains("OpenStreetMap"))
+        val missing = RideReport.locationsText(ride, emptyMap())
+        assertFalse(missing.contains("Barrio Norte"))
+        assertFalse(missing.contains("Neighborhoods:"))
     }
 
     @Test

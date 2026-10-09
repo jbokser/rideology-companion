@@ -8,6 +8,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.res.painterResource
+import com.jbokser.rideology_companion.R
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -27,23 +32,26 @@ import androidx.compose.ui.unit.sp
 import com.jbokser.rideology_companion.data.*
 import com.jbokser.rideology_companion.ui.theme.ChartBlue
 import com.jbokser.rideology_companion.ui.theme.ChartPurple
+import com.jbokser.rideology_companion.ui.theme.ChartMaximumRed
 import com.jbokser.rideology_companion.ui.theme.RideGreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.ceil
 import kotlin.math.log10
 
-internal enum class Channel { SPEED, RPM, GEAR }
+enum class Channel(val canvasHeightDp: Float, val topInsetDp: Float, val bottomInsetDp: Float) {
+    SPEED(242f, 18f, 42f), RPM(198f, 18f, 42f), GEAR(220f / 3f * 1.1f, 6f, 22f)
+}
 
 @Composable
-fun TelemetryCharts(telemetry: RideTelemetry) {
+fun TelemetryCharts(telemetry: RideTelemetry, onZoom: (Channel) -> Unit = {}) {
     if (telemetry.intervals.isEmpty()) {
         Text("No consecutive GPS samples are available for the telemetry charts.")
         return
     }
-    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        TelemetryPanel(telemetry, Channel.SPEED, "Speed", "km/h", ChartBlue, telemetry.maximumSpeed)
-        TelemetryPanel(telemetry, Channel.RPM, "Engine RPM", "rpm", ChartPurple, telemetry.maximumRpm)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        TelemetryPanel(telemetry, Channel.SPEED, "Speed", "km/h", ChartBlue, telemetry.maximumSpeed, onZoom = { onZoom(Channel.SPEED) })
+        TelemetryPanel(telemetry, Channel.RPM, "Engine RPM", "rpm", ChartPurple, telemetry.maximumRpm, onZoom = { onZoom(Channel.RPM) })
         TelemetryPanel(telemetry, Channel.GEAR, "Gear", "", RideGreen, null)
     }
 }
@@ -55,11 +63,20 @@ internal fun TelemetryPoint.value(channel: Channel): Double? = when (channel) {
 }
 
 @Composable
-private fun TelemetryPanel(
+internal fun TelemetryPanel(
     telemetry: RideTelemetry, channel: Channel, title: String, unit: String,
-    color: Color, maximum: TelemetryMaximum?
+    color: Color, maximum: TelemetryMaximum?, modifier: Modifier = Modifier,
+    showTitle: Boolean = true, onZoom: (() -> Unit)? = null
 ) {
-    Text(if (unit.isEmpty() || channel == Channel.RPM) title else "$title ($unit)", style = MaterialTheme.typography.titleMedium)
+    if (showTitle) Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(if (unit.isEmpty() || channel == Channel.RPM) title else "$title ($unit)", style = MaterialTheme.typography.titleMedium)
+        onZoom?.let { zoom ->
+            IconButton(onClick = zoom, enabled = maximum != null && telemetry.intervals.isNotEmpty()) {
+                Icon(painterResource(R.drawable.ic_zoom), contentDescription = "Zoom $title",
+                    modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
     if (channel != Channel.GEAR && maximum == null || channel == Channel.GEAR && telemetry.points.none { it.gear != null }) {
         Text("No valid $title data available.")
         return
@@ -71,26 +88,30 @@ private fun TelemetryPanel(
     val density = androidx.compose.ui.platform.LocalDensity.current
     val left = with(density) { 52.dp.toPx() }
     val right = with(density) { 12.dp.toPx() }
-    val top = with(density) { 30.dp.toPx() }
-    val bottom = with(density) { 42.dp.toPx() }
-    val domain = telemetry.distanceKm.takeIf { it > 0 } ?: 1.0
+    val top = with(density) { channel.topInsetDp.dp.toPx() }
+    val bottom = with(density) { channel.bottomInsetDp.dp.toPx() }
+    val axis = remember(telemetry, canvasSize, density) {
+        val paint = Paint().apply { textSize = with(density) { 10.sp.toPx() }; typeface = Typeface.MONOSPACE }
+        telemetryDistanceAxis(telemetry.distanceKm, canvasSize.width - left - right, paint, with(density) { 12.dp.toPx() })
+    }
+    val domain = axis.domainKm
     var line by remember(telemetry, channel) { mutableStateOf<Path?>(null) }
-    LaunchedEffect(telemetry, channel, canvasSize, density, scale) {
+    LaunchedEffect(telemetry, channel, canvasSize, density, scale, axis) {
         if (canvasSize.width <= left + right || canvasSize.height <= top + bottom) return@LaunchedEffect
         line = withContext(Dispatchers.Default) {
             telemetryPath(telemetry, channel, scale, domain, left, top,
                 canvasSize.width - left - right, canvasSize.height - top - bottom)
         }
     }
-    val description = "$title chart. Horizontal axis: cumulative GPS distance in kilometers. " +
+    val description = "$title chart. Horizontal axis: cumulative GPS distance in ${axis.unit}. " +
         "Vertical axis: ${if (channel == Channel.GEAR) "neutral and gears 1 to 6" else unit}." +
         (maximum?.let { " First maximum ${RideReport.format(it.value, 0)} $unit at ${RideReport.format(it.distanceKm, 2)} km." } ?: "")
-    Canvas(Modifier.fillMaxWidth().height(220.dp).onSizeChanged { canvasSize = it }
+    Canvas(modifier.fillMaxWidth().then(if (showTitle) Modifier.height(channel.canvasHeightDp.dp) else Modifier.fillMaxHeight()).onSizeChanged { canvasSize = it }
         .testTag("telemetry_${channel.name.lowercase()}").semantics { contentDescription = description }) {
         val width = size.width - left - right
         val height = size.height - top - bottom
         if (width <= 0 || height <= 0) return@Canvas
-        drawTelemetryPlot(line, channel, color, maximum, scale, domain, left, top, width, height)
+        drawTelemetryPlot(line, channel, color, maximum, scale, domain, left, top, width, height, axis)
     }
 }
 
@@ -102,9 +123,9 @@ internal fun DrawScope.labelPaint() = Paint(Paint.ANTI_ALIAS_FLAG).apply {
 
 internal fun DrawScope.axes(
     left: Float, top: Float, width: Float, height: Float, scale: ChartScale,
-    domain: Double, gear: Boolean = false, horizontalTicks: Boolean = true
+    domain: Double, gear: Boolean = false, horizontalTicks: Boolean = true, distanceAxis: DistanceAxis? = null
 ) {
-    val paint = labelPaint()
+    val paint = labelPaint().apply { if (gear) textSize = 7.sp.toPx() }
     val count = (scale.maximum / scale.tickStep).toInt()
     for (index in 0..count) {
         val value = index * scale.tickStep
@@ -117,13 +138,17 @@ internal fun DrawScope.axes(
     drawLine(Color.White, Offset(left, top), Offset(left, top + height), 1.dp.toPx())
     drawLine(Color.White, Offset(left, top + height), Offset(left + width, top + height), 1.dp.toPx())
     if (horizontalTicks) {
-        for (index in 0..3) {
-            val label = RideReport.format(domain * index / 3, 2)
-            val x = left + width * index / 3
-            drawContext.canvas.nativeCanvas.drawText(label, x - paint.measureText(label) / 2,
-                top + height + 17.dp.toPx(), paint)
+        val axis = requireNotNull(distanceAxis)
+        val ticks = (axis.scale.maximum / axis.scale.tickStep).toInt()
+        for (index in 0..ticks) {
+            val value = index * axis.scale.tickStep
+            val label = RideReport.format(value, 0)
+            val x = left + (value / axis.scale.maximum * width).toFloat()
+            drawLine(Color.White, Offset(x, top + height), Offset(x, top + height + 3.dp.toPx()), 1.dp.toPx())
+            drawContext.canvas.nativeCanvas.drawText(label, (x - paint.measureText(label) / 2).coerceIn(0f, (size.width - paint.measureText(label)).coerceAtLeast(0f)),
+                top + height + (if (gear) 9 else 17).dp.toPx(), paint)
         }
-        val label = "Distance (km)"
+        val label = "Distance (${axis.unit})"
         drawContext.canvas.nativeCanvas.drawText(label, left + (width - paint.measureText(label)) / 2,
             size.height - 3.dp.toPx(), paint)
     }
@@ -176,14 +201,14 @@ internal fun telemetryPath(
 
 internal fun DrawScope.drawTelemetryPlot(
     line: Path?, channel: Channel, color: Color, maximum: TelemetryMaximum?, scale: ChartScale,
-    domain: Double, left: Float, top: Float, width: Float, height: Float
+    domain: Double, left: Float, top: Float, width: Float, height: Float, axis: DistanceAxis
 ) {
-    axes(left, top, width, height, scale, domain, channel == Channel.GEAR)
+    axes(left, top, width, height, scale, domain, channel == Channel.GEAR, distanceAxis = axis)
     line?.let { drawPath(it, color, style = Stroke(width = 2.dp.toPx())) }
     maximum?.let { peak ->
         val x = left + (peak.distanceKm / domain * width).toFloat()
         val y = top + height - (peak.value / scale.maximum * height).toFloat()
-        drawCircle(color, 4.dp.toPx(), Offset(x, y))
+        drawCircle(ChartMaximumRed, 4.dp.toPx(), Offset(x, y))
         val unit = if (channel == Channel.SPEED) "km/h" else "rpm"
         val label = "Max ${RideReport.format(peak.value, 0)} $unit"
         val paint = labelPaint()
@@ -222,4 +247,17 @@ internal fun DrawScope.drawDistributionPlot(bins: List<SpeedDistanceBin>, scale:
     val label = "Speed range (km/h)"
     drawContext.canvas.nativeCanvas.drawText(label, left + (width - paint.measureText(label)) / 2,
         size.height - 6.dp.toPx(), paint)
+}
+
+/** Determines a shared distance domain using the largest label at the standard axis font size. */
+internal fun telemetryDistanceAxis(distanceKm: Double, width: Float, paint: Paint, gap: Float): DistanceAxis {
+    var ticks = 11
+    while (ticks > 4) {
+        val axis = RideChartCalculations.distanceAxis(distanceKm, ticks)
+        val count = (axis.scale.maximum / axis.scale.tickStep).toInt()
+        val labelWidth = paint.measureText(RideReport.format(axis.scale.maximum, 0))
+        if (width / count >= labelWidth + gap) return axis
+        ticks--
+    }
+    return RideChartCalculations.distanceAxis(distanceKm, 4)
 }

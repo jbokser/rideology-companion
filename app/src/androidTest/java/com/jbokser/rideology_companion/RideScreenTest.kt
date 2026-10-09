@@ -51,6 +51,9 @@ class RideScreenTest {
             rule.onNodeWithTag(tag).performScrollTo().assertIsDisplayed()
             chartScreenshot(tag)
         }
+        rule.onNodeWithTag("telemetry_speed").assertHeightIsEqualTo(242.dp)
+        rule.onNodeWithTag("telemetry_rpm").assertHeightIsEqualTo(198.dp)
+        rule.onNodeWithTag("telemetry_gear").assertHeightIsEqualTo((220f / 3f * 1.1f).dp)
         rule.onNodeWithTag("speed_distribution_section").performScrollTo().assertIsDisplayed()
         chartScreenshot("speed_distribution")
         rule.onNodeWithTag("speed_distribution").assertIsDisplayed()
@@ -84,9 +87,9 @@ class RideScreenTest {
         }
         instrumentation.addMonitor(monitor)
         try {
-            for (label in listOf("Ride summary", "Telemetry", "Speed distribution")) {
+            for (label in listOf("Ride summary", "Telemetry", "Speed distribution", "Max for each gear")) {
                 chooser.set(null)
-                rule.onNodeWithContentDescription(if (label == "Ride summary") "Share ride summary" else "Share $label chart").performScrollTo().performClick()
+                rule.onNodeWithContentDescription(if (label == "Ride summary") "Share ride summary" else if (label == "Max for each gear") "Share max for each gear" else "Share $label chart").performScrollTo().performClick()
                 rule.onNodeWithText("Share JPG").performClick()
                 rule.waitUntil(15000) { chooser.get() != null }
                 @Suppress("DEPRECATION")
@@ -104,22 +107,84 @@ class RideScreenTest {
                 val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 assertNotNull(bitmap)
                 assertTrue(bitmap.width >= 1080)
-                assertTrue(bitmap.height >= if (label == "Telemetry") 2200 else 900)
+                assertTrue(bitmap.height >= when (label) { "Telemetry" -> 1900; "Max for each gear" -> 300; else -> 900 })
                 val pixels = IntArray(bitmap.width * bitmap.height)
                 bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-                if (label != "Ride summary") assertTrue(pixels.any { android.graphics.Color.blue(it) > 180 && android.graphics.Color.red(it) < 130 })
+                if (label == "Telemetry" || label == "Speed distribution") assertTrue(pixels.any { android.graphics.Color.blue(it) > 180 && android.graphics.Color.red(it) < 130 })
                 else assertTrue(pixels.any { android.graphics.Color.green(it) > 180 && android.graphics.Color.red(it) < 160 && android.graphics.Color.blue(it) < 80 })
                 if (label == "Telemetry") {
                     assertTrue(pixels.any { android.graphics.Color.red(it) > 130 && android.graphics.Color.blue(it) > 200 && android.graphics.Color.green(it) < 180 })
                     assertTrue(pixels.any { android.graphics.Color.green(it) > 180 && android.graphics.Color.red(it) < 160 && android.graphics.Color.blue(it) < 80 })
                 }
                 bitmap.recycle()
-                java.io.File(context.cacheDir, when (label) { "Telemetry" -> "export_telemetry.jpg"; "Ride summary" -> "export_summary.jpg"; else -> "export_distribution.jpg" }).writeBytes(bytes)
+                java.io.File(context.cacheDir, when (label) { "Telemetry" -> "export_telemetry.jpg"; "Ride summary" -> "export_summary.jpg"; "Max for each gear" -> "export_gears.jpg"; else -> "export_distribution.jpg" }).writeBytes(bytes)
             }
         } finally {
             instrumentation.removeMonitor(monitor)
         }
     }
+
+    @Test
+    fun zoomChartsOpenInLandscapeRestoreAndShareSinglePanelJpgs() {
+        rule.activityRule.scenario.onActivity { activity ->
+            activity.startActivity(Intent(activity, MainActivity::class.java).apply {
+                action = Intent.ACTION_SEND
+                type = "text/csv"
+                putExtra(Intent.EXTRA_STREAM, Uri.parse("android.resource://${activity.packageName}/${R.raw.sample_ride}"))
+            })
+        }
+        rule.waitUntil(10000) { rule.onAllNodesWithText("Sample ride").fetchSemanticsNodes().isNotEmpty() }
+        val chooser = AtomicReference<Intent>()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val monitor = object : Instrumentation.ActivityMonitor() {
+            override fun onStartActivity(intent: Intent): Instrumentation.ActivityResult? {
+                if (intent.action != Intent.ACTION_CHOOSER) return null
+                chooser.set(intent)
+                return Instrumentation.ActivityResult(Activity.RESULT_CANCELED, null)
+            }
+        }
+        instrumentation.addMonitor(monitor)
+        try {
+            for ((title, tag) in listOf("Speed" to "speed", "Engine RPM" to "rpm")) {
+                rule.onNodeWithContentDescription("Zoom $title").performScrollTo().performClick()
+                rule.waitUntil(15000) { rule.onAllNodesWithTag("telemetry_zoom").fetchSemanticsNodes().isNotEmpty() }
+                rule.waitUntil(10000) { rule.activity.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE }
+                rule.onNodeWithTag("telemetry_zoom").assertIsDisplayed()
+                rule.onNodeWithTag("telemetry_$tag").assertIsDisplayed()
+                rule.onNodeWithTag(if (tag == "speed") "telemetry_rpm" else "telemetry_speed").assertDoesNotExist()
+                rule.activityRule.scenario.recreate()
+                rule.waitUntil(15000) { rule.onAllNodesWithTag("telemetry_zoom").fetchSemanticsNodes().isNotEmpty() }
+                chartScreenshot("zoom_$tag")
+                chooser.set(null)
+                rule.onNodeWithContentDescription("Share $title chart").performClick()
+                rule.onNodeWithText("Share JPG").performClick()
+                rule.waitUntil(15000) { chooser.get() != null }
+                @Suppress("DEPRECATION")
+                val send = chooser.get().getParcelableExtra<Intent>(Intent.EXTRA_INTENT)!!
+                @Suppress("DEPRECATION")
+                val uri = send.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)!!
+                assertEquals("image/jpeg", send.type)
+                assertEquals("Sample ride · $title", send.getStringExtra(Intent.EXTRA_SUBJECT))
+                assertTrue(send.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+                val bytes = rule.activity.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
+                val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                assertEquals(1920, bitmap.width)
+                assertTrue(bitmap.height >= 1080)
+                assertTrue(bitmap.width > bitmap.height)
+                bitmap.recycle()
+                java.io.File(rule.activity.cacheDir, "export_zoom_$tag.jpg").writeBytes(bytes)
+                rule.onNodeWithContentDescription("Back").performClick()
+                rule.waitUntil(15000) { rule.onAllNodesWithTag("telemetry_zoom").fetchSemanticsNodes().isEmpty() }
+                rule.waitUntil(10000) { rule.activity.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT }
+            }
+        } finally {
+            instrumentation.removeMonitor(monitor)
+        }
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = 29)
+    fun zoomSpeedCanBeSavedAsLandscapeGalleryImage() = verifyGalleryExport("Share Speed chart", "speed", "Zoom Speed")
 
     @Test
     @SdkSuppress(minSdkVersion = 29)
@@ -129,7 +194,7 @@ class RideScreenTest {
     @SdkSuppress(minSdkVersion = 29)
     fun summaryCanBeSavedAsPublishedGalleryImage() = verifyGalleryExport("Share ride summary", "summary")
 
-    private fun verifyGalleryExport(description: String, prefix: String) {
+    private fun verifyGalleryExport(description: String, prefix: String, zoom: String? = null) {
         rule.activityRule.scenario.onActivity { activity ->
             activity.startActivity(Intent(activity, MainActivity::class.java).apply {
                 action = Intent.ACTION_SEND
@@ -138,6 +203,10 @@ class RideScreenTest {
             })
         }
         rule.waitUntil(10000) { rule.onAllNodesWithText("Sample ride").fetchSemanticsNodes().isNotEmpty() }
+        zoom?.let {
+            rule.onNodeWithContentDescription(it).performScrollTo().performClick()
+            rule.waitUntil(15000) { rule.onAllNodesWithTag("telemetry_zoom").fetchSemanticsNodes().isNotEmpty() }
+        }
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val resolver = context.contentResolver
         val collection = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
@@ -149,7 +218,8 @@ class RideScreenTest {
         val before = savedIds()
         var created = emptySet<Long>()
         try {
-            rule.onNodeWithContentDescription(description).performScrollTo().performClick()
+            if (zoom == null) rule.onNodeWithContentDescription(description).performScrollTo()
+            rule.onNodeWithContentDescription(description).performClick()
             rule.onNodeWithText("Save to gallery").performClick()
             rule.waitUntil(15000) { created = savedIds() - before; created.isNotEmpty() }
             val uri = android.content.ContentUris.withAppendedId(collection, created.single())
@@ -157,9 +227,65 @@ class RideScreenTest {
             val bitmap = resolver.openInputStream(uri)!!.use { android.graphics.BitmapFactory.decodeStream(it) }
             assertNotNull(bitmap)
             assertTrue(bitmap.width >= 1080)
+            if (zoom != null) assertTrue(bitmap.width > bitmap.height)
             bitmap.recycle()
         } finally {
             (savedIds() - before).forEach { resolver.delete(android.content.ContentUris.withAppendedId(collection, it), null, null) }
+        }
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = 29)
+    fun gearMaximaCanBeSavedAsPublishedGalleryImage() = verifyGalleryExport("Share max for each gear", "gears")
+
+    @Test
+    @SdkSuppress(minSdkVersion = 26)
+    fun locationsCanBeCopiedAndSharedWithoutSummaryMetrics() {
+        rule.activityRule.scenario.onActivity { activity ->
+            activity.startActivity(Intent(activity, MainActivity::class.java).apply {
+                action = Intent.ACTION_SEND
+                type = "text/csv"
+                putExtra(Intent.EXTRA_STREAM, Uri.parse("android.resource://${activity.packageName}/${R.raw.sample_ride}"))
+            })
+        }
+        rule.waitUntil(10000) { rule.onAllNodesWithText("Sample ride").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithContentDescription("Share locations").performScrollTo().performClick()
+        rule.onNodeWithText("Copy text").performClick()
+        var copied = ""
+        rule.waitUntil(10000) {
+            rule.activityRule.scenario.onActivity { activity ->
+                copied = activity.getSystemService(ClipboardManager::class.java).primaryClip?.getItemAt(0)?.text?.toString().orEmpty()
+            }
+            copied.contains("Locations")
+        }
+        assertTrue(copied.contains("Starting point:"))
+        assertTrue(copied.contains("Maximum speed location:"))
+        assertTrue(copied.contains("query=-34.5082,-58.47964"))
+        assertFalse(copied.contains("Max engine speed"))
+        assertFalse(copied.contains("Max for each gear"))
+        val chooser = AtomicReference<Intent>()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val monitor = object : Instrumentation.ActivityMonitor() {
+            override fun onStartActivity(intent: Intent): Instrumentation.ActivityResult? {
+                if (intent.action != Intent.ACTION_CHOOSER) return null
+                chooser.set(intent)
+                return Instrumentation.ActivityResult(Activity.RESULT_CANCELED, null)
+            }
+        }
+        instrumentation.addMonitor(monitor)
+        try {
+            rule.onNodeWithContentDescription("Share locations").performClick()
+            rule.onNodeWithText("Share as message").performClick()
+            rule.waitUntil(10000) { chooser.get() != null }
+            @Suppress("DEPRECATION")
+            val send = chooser.get().getParcelableExtra<Intent>(Intent.EXTRA_INTENT)!!
+            assertEquals("text/plain", send.type)
+            val text = send.getStringExtra(Intent.EXTRA_TEXT)!!
+            assertTrue(text.contains("*Locations*"))
+            assertTrue(text.contains("query=-34.5082,-58.47964"))
+            assertFalse(text.contains("Max engine speed"))
+        } finally {
+            instrumentation.removeMonitor(monitor)
         }
     }
 
@@ -245,7 +371,7 @@ class RideScreenTest {
             val position = scrollbar.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo]
             position.current >= position.range.endInclusive * 0.8f
         }
-        rule.onNodeWithText("Calculation notes").assertIsDisplayed()
+        rule.onNodeWithText("Calculation notes").assertDoesNotExist()
         scrollbar.performTouchInput { click(Offset(6f, 1f)) }
         rule.waitUntil(10000) {
             scrollbar.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current == 0f
@@ -289,10 +415,9 @@ class RideScreenTest {
         assertTrue(copiedText.startsWith("Sample ride\n"))
         assertTrue(copiedText.contains("Max engine speed: 3000 rpm (for 3.0 s / 60 m)"))
         assertTrue(copiedText.contains("Moving time: 0:00:05"))
-        assertTrue(copiedText.contains("https://www.google.com/maps/search/?api=1&query=-34.5082,-58.47964"))
-        assertTrue(copiedText.contains("Max for each gear"))
-        assertTrue(copiedText.contains("Maximum speed location:"))
-        assertTrue(copiedText.contains("https://www.google.com/maps/search/?api=1&query=-34.5072,-58.47964"))
+        assertFalse(copiedText.contains("maps"))
+        assertFalse(copiedText.contains("Max for each gear"))
+        assertFalse(copiedText.contains("Maximum speed location:"))
 
         val chooser = AtomicReference<Intent>()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -316,13 +441,8 @@ class RideScreenTest {
             assertTrue(message.startsWith("*Sample ride*\n"))
             assertTrue(message.contains("*Ride summary*"))
             assertTrue(message.contains("*Max engine speed*: 3000 rpm"))
-            assertTrue(message.contains("*Max for each gear*\n```\n"))
-            assertTrue(message.contains("https://www.google.com/maps/search/?api=1&query=-34.5072,-58.47964"))
-            assertEquals(2, copiedText.lines().count { it == "```" })
-            assertEquals(
-                message.substringAfter("```\n").substringBefore("\n```"),
-                copiedText.substringAfter("```\n").substringBefore("\n```")
-            )
+            assertFalse(message.contains("Max for each gear"))
+            assertFalse(message.contains("maps"))
             assertEquals("Sample ride", sendIntent.getStringExtra(Intent.EXTRA_SUBJECT))
         } finally {
             instrumentation.removeMonitor(monitor)

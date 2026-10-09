@@ -6,3 +6,7 @@ import androidx.compose.ui.graphics.Color
 val RideGreen = Color(0xFF66FF00)
 val ChartBlue = Color(0xFF42A5FF)
 val ChartPurple = Color(0xFFB388FF)
+
+val RideAmber = Color(0xFFFFB300)
+
+val ChartMaximumRed = Color(0xFFFF4444)

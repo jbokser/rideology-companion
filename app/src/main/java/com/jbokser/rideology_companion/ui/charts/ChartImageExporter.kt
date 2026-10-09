@@ -14,6 +14,8 @@ import android.os.Environment
 import android.provider.MediaStore
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Canvas
+import androidx.compose.ui.graphics.toArgb
+import com.jbokser.rideology_companion.ui.theme.RideAmber
 import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
@@ -27,21 +29,28 @@ import java.io.File
 import java.util.UUID
 
 enum class ChartImageKind(val label: String, val filePrefix: String) {
-    SUMMARY("Ride summary", "summary"), TELEMETRY("Telemetry", "telemetry"), DISTRIBUTION("Speed distribution", "speed_distribution")
+    SUMMARY("Ride summary", "summary"), GEARS("Max for each gear", "gears"), TELEMETRY("Telemetry", "telemetry"), DISTRIBUTION("Speed distribution", "speed_distribution"), SPEED("Speed", "speed"), RPM("Engine RPM", "rpm")
 }
 
 object ChartImageExporter {
-    fun render(ride: RideSummary, kind: ChartImageKind): Bitmap {
-        if (kind == ChartImageKind.SUMMARY) return renderSummary(ride)
+    fun render(context: Context, ride: RideSummary, kind: ChartImageKind): Bitmap {
+        if (kind == ChartImageKind.SUMMARY || kind == ChartImageKind.GEARS) return renderReport(context, ride, kind)
         val telemetry = requireNotNull(ride.telemetry) { "No telemetry data is available." }
-        require(if (kind == ChartImageKind.TELEMETRY) telemetry.intervals.isNotEmpty() else ride.speedDistribution.isNotEmpty()) {
+        val channels = when (kind) {
+            ChartImageKind.TELEMETRY -> Channel.entries
+            ChartImageKind.SPEED -> listOf(Channel.SPEED)
+            ChartImageKind.RPM -> listOf(Channel.RPM)
+            else -> emptyList()
+        }
+        val singlePanel = kind == ChartImageKind.SPEED || kind == ChartImageKind.RPM
+        require(if (channels.isNotEmpty()) telemetry.intervals.isNotEmpty() else ride.speedDistribution.isNotEmpty()) {
             "No GPS data is available for this chart."
         }
-        val width = if (kind == ChartImageKind.TELEMETRY) 1080 else maxOf(1080, 80 + (64 + ride.speedDistribution.size * 36) * 3)
+        val width = if (singlePanel) 1920 else if (kind == ChartImageKind.TELEMETRY) 1080 else maxOf(1080, 80 + (64 + ride.speedDistribution.size * 36) * 3)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE; textSize = 42f; typeface = Typeface.DEFAULT }
         val titleLines = wrapTitle(ride.title, paint, width - 80f)
         val header = 126 + titleLines.size * 54
-        val height = header + if (kind == ChartImageKind.TELEMETRY) 3 * 752 + 40 else 900
+        val height = if (singlePanel) maxOf(1080, header + 900) else header + if (kind == ChartImageKind.TELEMETRY) channels.sumOf { (it.canvasHeightDp * 3 + 68).toInt() } + 40 else 900
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         try {
             val native = android.graphics.Canvas(bitmap)
@@ -60,24 +69,26 @@ object ChartImageExporter {
                 scope.draw(drawDensity, LayoutDirection.Ltr, Canvas(native), Size(width - 80f, plotHeight), draw)
                 native.restore()
             }
-            if (kind == ChartImageKind.TELEMETRY) {
-                val domain = telemetry.distanceKm.takeIf { it > 0 } ?: 1.0
-                Channel.entries.forEachIndexed { index, channel ->
-                    val top = header + index * 752f
+            if (channels.isNotEmpty()) {
+                var top = header.toFloat()
+                channels.forEach { channel ->
                     val title = when (channel) { Channel.SPEED -> "Speed (km/h)"; Channel.RPM -> "Engine RPM"; Channel.GEAR -> "Gear" }
                     native.drawText(title, 40f, top + 42f, paint)
                     val maximum = when (channel) { Channel.SPEED -> telemetry.maximumSpeed; Channel.RPM -> telemetry.maximumRpm; Channel.GEAR -> null }
                     val color = when (channel) { Channel.SPEED -> ChartBlue; Channel.RPM -> ChartPurple; Channel.GEAR -> RideGreen }
                     val scale = if (channel == Channel.GEAR) ChartScale(6.0, 1.0) else RideChartCalculations.scale(maximum?.value ?: 0.0)
                     if (telemetry.points.none { it.value(channel) != null }) native.drawText("Unavailable", 40f, top + 110f, paint) else {
-                        plot(top + 60, 660f) {
-                            val left = 52.dp.toPx(); val plotTop = 30.dp.toPx()
+                        plot(top + 48, if (singlePanel) height - top - 88 else channel.canvasHeightDp * 3) {
+                            val left = 52.dp.toPx(); val plotTop = channel.topInsetDp.dp.toPx()
                             val plotWidth = size.width - left - 12.dp.toPx()
-                            val plotHeight = size.height - plotTop - 42.dp.toPx()
+                            val plotHeight = size.height - plotTop - channel.bottomInsetDp.dp.toPx()
+                            val axis = telemetryDistanceAxis(telemetry.distanceKm, plotWidth, labelPaint(), 12.dp.toPx())
+                            val domain = axis.domainKm
                             val path = telemetryPath(telemetry, channel, scale, domain, left, plotTop, plotWidth, plotHeight)
-                            drawTelemetryPlot(path, channel, color, maximum, scale, domain, left, plotTop, plotWidth, plotHeight)
+                            drawTelemetryPlot(path, channel, color, maximum, scale, domain, left, plotTop, plotWidth, plotHeight, axis)
                         }
                     }
+                    top += channel.canvasHeightDp * 3 + 68
                 }
             } else {
                 native.drawText("Distance (km)", 40f, header + 42f, paint)
@@ -92,50 +103,36 @@ object ChartImageExporter {
         }
     }
 
-    private fun renderSummary(ride: RideSummary): Bitmap {
+    private fun renderReport(context: Context, ride: RideSummary, kind: ChartImageKind): Bitmap {
         val width = 1080
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE
             textSize = 34f
             typeface = Typeface.MONOSPACE
         }
-        data class Line(val text: String, val x: Float, val size: Float, val green: Boolean = false) {
+        data class Line(val text: String, val x: Float, val size: Float, val green: Boolean = false, val icon: Int? = null, val cells: List<String>? = null) {
             val height: Float get() = size + 14f
         }
         val lines = buildList {
-            fun text(value: String, indent: Boolean = false, size: Float = 34f, green: Boolean = false) {
-                val x = if (indent) 96f else 56f
+            fun text(value: String, indent: Boolean = false, size: Float = 34f, green: Boolean = false, icon: Int? = null) {
+                val x = if (icon != null || indent) 104f else 56f
                 paint.textSize = size
-                wrapTitle(value, paint, width - x - 56f).forEach { add(Line(it, x, size, green)) }
+                wrapTitle(value, paint, width - x - 56f).forEachIndexed { index, line -> add(Line(line, x, size, green, icon.takeIf { index == 0 })) }
             }
             fun space() { add(Line("", 56f, 14f)) }
-            fun location(label: String, coordinate: Coordinate?) {
-                text("$label:")
-                text(coordinate?.display() ?: "Unavailable", indent = true)
-                space()
-            }
             text(ride.title)
             space()
-            text("Ride summary", green = true)
+            text(kind.label, green = true)
             space()
-            RideReport.metrics(ride).forEach { metric ->
-                text("${metric.label}:")
+            if (kind == ChartImageKind.SUMMARY) RideReport.metrics(ride).forEach { metric ->
+                text("${metric.label}:", icon = metricIcon(metric))
                 text(metric.value, indent = true)
                 metric.detail?.let { text(it, indent = true, size = 26f) }
                 space()
             }
-            location("Starting point", ride.start)
-            location("Ending point", ride.end)
-            location("Maximum speed location", ride.maxSpeedLocation)
-            text("Max for each gear", green = true)
-            if (ride.gears.isEmpty()) text("No valid numbered gear data available.") else {
-                RideReport.plainText(ride).substringAfter("```\n").substringBefore("\n```").lines()
-                    .forEach { text(it) }
-            }
-            if (ride.warnings.isNotEmpty()) {
-                space()
-                text("Data notes", green = true)
-                ride.warnings.forEach { text("- $it") }
+            if (kind == ChartImageKind.GEARS) {
+                if (ride.gears.isEmpty()) text("No valid numbered gear data available.")
+                else RideReport.gearRows(ride).forEach { add(Line("", 56f, 34f, cells = it)) }
             }
         }
         val bitmap = Bitmap.createBitmap(width, (160f + lines.sumOf { it.height.toDouble() }).toInt(), Bitmap.Config.ARGB_8888)
@@ -146,11 +143,33 @@ object ChartImageExporter {
             canvas.drawText("RIDEOLOGY COMPANION", 56f, 58f, paint)
             paint.textSize = 26f
             canvas.drawText("Ride log analysis by @jbokser · v${com.jbokser.rideology_companion.BuildConfig.VERSION_NAME}", 56f, 100f, paint)
+            paint.textSize = 34f
+            val columnWidths = if (kind == ChartImageKind.GEARS) (0..2).map { column ->
+                RideReport.gearRows(ride).maxOf { paint.measureText(it[column]) }
+            } else emptyList()
+            val highestRpm = RideReport.highlightedGearRpm(ride)
+            var tableRow = 0
             var baseline = 160f
             lines.forEach { line ->
                 paint.textSize = line.size
                 paint.color = if (line.green) android.graphics.Color.rgb(102, 255, 0) else android.graphics.Color.WHITE
-                canvas.drawText(line.text, line.x, baseline, paint)
+                line.icon?.let { resource ->
+                    androidx.core.content.ContextCompat.getDrawable(context, resource)?.apply {
+                        setBounds(56, (baseline - 30).toInt(), 90, (baseline + 4).toInt())
+                        draw(canvas)
+                    }
+                }
+                if (line.cells != null) {
+                    line.cells.forEachIndexed { column, value ->
+                        val center = 56f + (width - 112f) / 3 * (column + 0.5f)
+                        val x = if (tableRow == 0) center - paint.measureText(value) / 2
+                            else center + columnWidths[column] / 2 - paint.measureText(value)
+                        val highlight = column == 1 && tableRow > 0 && highestRpm != null && ride.gears[tableRow - 1].rpm == highestRpm
+                        paint.color = if (highlight) RideAmber.toArgb() else android.graphics.Color.WHITE
+                        canvas.drawText(value, x, baseline, paint)
+                    }
+                    tableRow++
+                } else canvas.drawText(line.text, line.x, baseline, paint)
                 baseline += line.height
             }
             paint.color = android.graphics.Color.rgb(102, 255, 0)

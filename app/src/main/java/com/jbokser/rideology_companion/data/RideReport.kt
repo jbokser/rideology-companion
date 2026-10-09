@@ -36,37 +36,36 @@ object RideReport {
             metric.detail?.let { append(" ($it)") }
             appendLine()
         }
+    }.trimEnd()
+
+    fun locationsText(ride: RideSummary, locationDetails: Map<Coordinate, LocationDetails>, formatted: Boolean = false): String = buildString {
+        fun heading(text: String) = if (formatted) "*$text*" else text
+        appendLine(heading(ride.title))
         appendLine()
-        appendLocation(heading("Starting point"), ride.start)
-        appendLocation(heading("Ending point"), ride.end)
-        appendLocation(heading("Maximum speed location"), ride.maxSpeedLocation)
-        appendLine()
-        appendLine(heading("Max for each gear"))
-        if (!formatted) appendLine("=================")
-        if (ride.gears.isEmpty()) appendLine("No valid numbered gear data available.") else {
-            appendLine("```")
-            val rows = listOf(listOf("Gear", "RPM", "km/h")) + ride.gears.map {
-                listOf(it.gear, it.rpm?.let { rpm -> format(rpm, 0) } ?: "N/A",
-                    it.speed?.let { speed -> format(speed, 1) } ?: "N/A")
+        appendLine(heading("Locations"))
+        listOf("Starting point" to ride.start, "Ending point" to ride.end,
+            "Maximum speed location" to ride.maxSpeedLocation).forEach { (label, coordinate) ->
+            appendLine("${heading(label)}: ${coordinate?.display() ?: "Unavailable"}")
+            coordinate?.let {
+                locationDetails[it]?.lines()?.forEach { line -> appendLine(line) }
+                appendLine("https://www.google.com/maps/search/?api=1&query=${it.latitude},${it.longitude}")
             }
-            val widths = (0..2).map { column -> rows.maxOf { it[column].length } }
-            rows.forEach { row ->
-                appendLine(row[0].padEnd(widths[0]) + "  " + row[1].padStart(widths[1]) + "  " + row[2].padStart(widths[2]))
-            }
-            appendLine("```")
-        }
-        if (ride.warnings.isNotEmpty()) {
             appendLine()
-            appendLine(heading("Data notes"))
-            ride.warnings.forEach { appendLine("- $it") }
         }
     }.trimEnd()
 
-    private fun StringBuilder.appendLocation(label: String, coordinate: Coordinate?) {
-        appendLine("$label: ${coordinate?.display() ?: "Unavailable"}")
-        coordinate?.let {
-            appendLine("https://www.google.com/maps/search/?api=1&query=${it.latitude},${it.longitude}")
-        }
+    fun highlightedGearRpm(ride: RideSummary): Double? =
+        ride.gears.mapNotNull { it.rpm }.maxOrNull()?.takeUnless { it == ride.gears.lastOrNull()?.rpm }
+
+    fun gearRows(ride: RideSummary): List<List<String>> = listOf(listOf("Gear", "RPM", "km/h")) + ride.gears.map {
+            listOf(it.gear, it.rpm?.let { rpm -> format(rpm, 0) } ?: "N/A",
+                it.speed?.let { speed -> format(speed, 1) } ?: "N/A")
+    }
+
+    fun gearTable(ride: RideSummary): List<String> {
+        val rows = gearRows(ride)
+        val widths = (0..2).map { column -> rows.maxOf { it[column].length } }
+        return rows.map { row -> row.indices.joinToString("  ") { row[it].padStart(widths[it]) } }
     }
 
     fun format(value: Double, digits: Int): String = String.format(Locale.US, "%.${digits}f", value)

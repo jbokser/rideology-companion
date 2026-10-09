@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
@@ -48,6 +49,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.style.TextDecoration
+import com.jbokser.rideology_companion.ui.charts.TextExportMenu
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import androidx.core.graphics.drawable.toBitmap
@@ -59,8 +61,12 @@ import com.jbokser.rideology_companion.ui.charts.SpeedDistributionChart
 import com.jbokser.rideology_companion.ui.charts.ChartExportMenu
 import com.jbokser.rideology_companion.ui.charts.ChartImageKind
 import kotlinx.coroutines.*
+import android.content.pm.ActivityInfo
+import com.jbokser.rideology_companion.ui.charts.Channel
+import com.jbokser.rideology_companion.ui.charts.TelemetryZoomScreen
 
 class MainActivity : ComponentActivity() {
+    private var zoomChannel by mutableStateOf<Channel?>(null)
     private var summary by mutableStateOf<RideSummary?>(null)
     private var loading by mutableStateOf(false)
     private var error by mutableStateOf<String?>(null)
@@ -70,13 +76,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        zoomChannel = savedInstanceState?.getString("zoom_channel")?.let { value -> Channel.entries.find { it.name == value } }
+        if (zoomChannel != null) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.BLACK)
         )
         setContent {
             RideologyCompanionTheme {
-                RideScreen(summary, loading, error, ::load, ::openMap, ::copySummary, ::shareSummary, ::openRideology)
+                val screenState = rememberSaveableStateHolder()
+                val zoom = zoomChannel
+                val ride = summary
+                if (zoom != null && ride != null) TelemetryZoomScreen(ride, zoom, ::closeZoom)
+                else screenState.SaveableStateProvider("ride") {
+                    RideScreen(summary, loading, error, ::load, ::openMap, ::copySummary, ::shareSummary, ::openRideology, ::openZoom)
+                }
                 if (sharedFiles.isNotEmpty()) AlertDialog(
                     onDismissRequest = { sharedFiles = emptyList() },
                     title = { Text("Choose a ride log") },
@@ -106,10 +120,12 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        closeZoom()
         receive(intent)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        zoomChannel?.let { outState.putString("zoom_channel", it.name) }
         selectedUri?.let { outState.putString("selected_uri", it.toString()) }
         if (sharedFiles.isNotEmpty()) outState.putStringArrayList("shared_uris", ArrayList(sharedFiles.map { it.first.toString() }))
         super.onSaveInstanceState(outState)
@@ -175,6 +191,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openZoom(channel: Channel) {
+        zoomChannel = channel
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+    }
+
+    private fun closeZoom() {
+        zoomChannel = null
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+
     private fun openRideology() {
         val launch = listOf("jp.co.khi.mce.rideologytheappV2", "jp.co.khi.mce.rideologytheapp")
             .firstNotNullOfOrNull { packageManager.getLaunchIntentForPackage(it) }
@@ -219,7 +245,7 @@ class MainActivity : ComponentActivity() {
 private fun RideScreen(
     summary: RideSummary?, loading: Boolean, error: String?, onOpen: (Uri) -> Unit,
     onMap: (Coordinate) -> Unit, onCopy: (RideSummary) -> Unit, onShare: (RideSummary) -> Unit,
-    onRideology: () -> Unit
+    onRideology: () -> Unit, onZoom: (Channel) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val resources = androidx.compose.ui.platform.LocalResources.current
@@ -275,25 +301,31 @@ private fun RideScreen(
                     Panel("Ride summary", action = { ChartExportMenu(ride, ChartImageKind.SUMMARY, onCopy = { onCopy(ride) }, onShareText = { onShare(ride) }) }) {
                         RideReport.metrics(ride).forEach { Metric(it) }
                     }
-                    Panel("Locations") {
-                        Location("Starting point", ride.start, onMap)
-                        Location("Ending point", ride.end, onMap)
-                        Location("Maximum speed location", ride.maxSpeedLocation, onMap)
-                    }
-                    Panel("Max for each gear") {
-                        if (ride.gears.isEmpty()) Text("No valid numbered gear data available.") else {
-                            Row(Modifier.fillMaxWidth()) {
-                                Text("Gear", Modifier.weight(1f)); Text("RPM", Modifier.weight(1f)); Text("km/h", Modifier.weight(1f))
+                    var locationDetails by remember(ride) { mutableStateOf<Map<Coordinate, LocationDetails>>(emptyMap()) }
+                    LaunchedEffect(ride) {
+                        listOfNotNull(ride.start, ride.end, ride.maxSpeedLocation).distinct().forEach { coordinate ->
+                            LocationLookup.lookup(context.applicationContext, coordinate)?.let { details ->
+                                locationDetails = locationDetails + (coordinate to details)
                             }
-                            ride.gears.forEach { gear -> Row(Modifier.fillMaxWidth()) {
-                                Text(gear.gear, Modifier.weight(1f))
-                                Text(gear.rpm?.let { RideReport.format(it, 0) } ?: "N/A", Modifier.weight(1f))
-                                Text(gear.speed?.let { RideReport.format(it, 1) } ?: "N/A", Modifier.weight(1f))
-                            } }
                         }
                     }
+                    Panel("Locations", action = {
+                        TextExportMenu(ride.title, "Locations",
+                            RideReport.locationsText(ride, locationDetails), RideReport.locationsText(ride, locationDetails, true))
+                    }) {
+                        Location("Starting point", ride.start, onMap, locationDetails[ride.start])
+                        Location("Ending point", ride.end, onMap, locationDetails[ride.end])
+                        Location("Maximum speed location", ride.maxSpeedLocation, onMap, locationDetails[ride.maxSpeedLocation])
+
+                    }
                     ride.telemetry?.let { telemetry ->
-                        Panel("Telemetry", action = { ChartExportMenu(ride, ChartImageKind.TELEMETRY) }) { TelemetryCharts(telemetry) }
+                        Panel("Telemetry", action = { ChartExportMenu(ride, ChartImageKind.TELEMETRY) }) { TelemetryCharts(telemetry, onZoom) }
+                    }
+                    Panel("Max for each gear", action = { ChartExportMenu(ride, ChartImageKind.GEARS) }) {
+                        com.jbokser.rideology_companion.ui.charts.GearMaximaTable(ride)
+                    }
+
+                    ride.telemetry?.let {
                         Panel("Speed distribution", action = { ChartExportMenu(ride, ChartImageKind.DISTRIBUTION) }) {
                             Column(Modifier.testTag("speed_distribution_section")) {
                                 SpeedDistributionChart(ride.speedDistribution)
@@ -301,9 +333,7 @@ private fun RideScreen(
                         }
                     }
                     if (ride.warnings.isNotEmpty()) Panel("Data notes") { ride.warnings.forEach { Text(it) } }
-                    Panel("Calculation notes") {
-                        Text("Speed average and median exclude zero wheel speed. Idle RPM includes all stopped samples, including engine-off samples. Time and distance hold each sample until the next timestamp, including gaps. Peak durations sum matching intervals; the final sample has no following interval. Acceleration and braking are estimates from wheel speed. Place names are not available in this version.")
-                    }
+
                 }
             }
             RideScrollbar(scrollState, Modifier.align(Alignment.CenterEnd).width(48.dp).fillMaxHeight().padding(vertical = 8.dp))
@@ -326,18 +356,27 @@ private fun Panel(title: String, action: (@Composable () -> Unit)? = null, conte
 @Composable
 private fun Metric(metric: ReportMetric) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(metric.label, style = MaterialTheme.typography.labelLarge)
-        Text(metric.value, style = MaterialTheme.typography.bodyLarge)
-        metric.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(painterResource(com.jbokser.rideology_companion.ui.charts.metricIcon(metric)), contentDescription = null, modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurface)
+            Text(metric.label, style = MaterialTheme.typography.labelLarge)
+        }
+        Column(Modifier.padding(start = 28.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(metric.value, style = MaterialTheme.typography.bodyLarge)
+            metric.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
     }
 }
 
 @Composable
-private fun Location(label: String, coordinate: Coordinate?, onMap: (Coordinate) -> Unit) {
+private fun Location(label: String, coordinate: Coordinate?, onMap: (Coordinate) -> Unit, details: LocationDetails? = null) {
     Text(label)
     if (coordinate == null) Text("Unavailable") else {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(coordinate.display(), modifier = Modifier.weight(1f), fontFamily = FontFamily.Monospace)
+            Column(Modifier.weight(1f)) {
+                Text(coordinate.display(), fontFamily = FontFamily.Monospace)
+                details?.lines()?.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+            }
             IconButton(onClick = { onMap(coordinate) }) {
                 Icon(painterResource(R.drawable.ic_location_pin), contentDescription = "Open $label in maps",
                     tint = MaterialTheme.colorScheme.primary)

@@ -11,6 +11,26 @@ class RideTelemetryTest {
     private fun analyze(vararg samples: Sample) = RideTelemetryAnalyzer.analyze(RideLog("Ride", samples.toList(), emptyList()))
 
     @Test
+    fun distanceAxesUseAtLeastFourIntegerTicksAndFiveOrTenSteps() {
+        for (distance in listOf(0.0, 0.001, 0.22, 3.0, 14.99, 15.0, 25.0, 40.0, 51.0, 150.0, 9999.0)) {
+            for (capacity in 4..11) {
+                val axis = RideChartCalculations.distanceAxis(distance, capacity)
+                assertTrue(axis.domainKm >= distance)
+                val count = (axis.scale.maximum / axis.scale.tickStep).toInt() + 1
+                assertTrue(count in 4..capacity)
+                assertEquals(axis.scale.tickStep.toLong().toDouble(), axis.scale.tickStep, 0.0)
+                val stepText = axis.scale.tickStep.toLong().toString().trimEnd('0')
+                assertTrue(stepText == "5" || stepText == "1")
+                assertEquals(if (distance < 15) "m" else "km", axis.unit)
+            }
+        }
+        assertEquals(250.0, RideChartCalculations.distanceAxis(0.22).scale.maximum, 0.0)
+        assertEquals(50.0, RideChartCalculations.distanceAxis(0.22).scale.tickStep, 0.0)
+        assertEquals(10.0, RideChartCalculations.distanceAxis(40.0).scale.tickStep, 0.0)
+        assertEquals(60.0, RideChartCalculations.distanceAxis(51.0, 7).scale.maximum, 0.0)
+    }
+
+    @Test
     fun distributionUsesEndingSpeedAndHalfOpenTwentyKmhBins() {
         val ride = analyze(sample(0, 0.0, 200.0), sample(1000, 0.01, 19.999), sample(2000, 0.02, 20.0),
             sample(3000, 0.03, 40.0), sample(13000, 1.0, 100.0), sample(14000, 1.01, null))

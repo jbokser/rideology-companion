@@ -35,7 +35,7 @@ Users must be able to open an exported CSV file from within the application or s
 | Starting and ending points | Coordinates in degrees, minutes, and seconds, with place names when available and links to open each location in a compatible map application |
 | Maximum values for each gear | A table containing gear, maximum RPM, and maximum wheel speed in km/h |
 
-Acceleration and braking deceleration must be derived from wheel speed and elapsed time because the supplied CSV does not contain acceleration or brake sensor fields. Place names are not included in the sample either; place-name lookup is not implemented in this version.
+Acceleration and braking deceleration must be derived from wheel speed and elapsed time because the supplied CSV does not contain acceleration or brake sensor fields. Place names are not included in the sample either; address lookup is implemented using the public Photon reverse-geocoding service.
 
 ### Calculation Rules
 
@@ -85,21 +85,31 @@ Future exports may contain more or fewer columns, metadata lines, or data rows. 
 
 The share icon beside the **Ride summary** heading offers four actions:
 
-- **Copy text** copies the report to the clipboard as plain text, with the aligned gear table enclosed by opening and closing triple backticks for monospace formatting in compatible applications.
-- **Share as message** opens the Android Sharesheet with bold headings and metric labels using WhatsApp-style asterisks, plus a triple-backtick monospace gear table with dynamically padded columns. Formatting depends on support in the receiving application. The user chooses the recipient and sends the message in that application.
+- **Copy text** copies the report to the clipboard as plain text, containing only the metrics displayed in this section.
+- **Share as message** opens the Android Sharesheet with bold headings and metric labels using WhatsApp-style asterisks, containing only summary metrics. Formatting depends on support in the receiving application. The user chooses the recipient and sends the message in that application.
 
 - **Share JPG** shares a complete image of the report as an attachment through the Android Sharesheet.
 - **Save to gallery** saves the summary JPG in the **Pictures / Rideology Companion** album.
 
-The JPG includes all summary metrics, coordinates, per-gear maxima, and any data-quality notes, using the black, green, and white interface style. Each metric and location label ends with a colon, followed by its value on a separate indented line. Maximum-duration and distance details use smaller text below the value. Text exports include clickable map URLs.
+The summary JPG contains only the summary metrics and ride title, with white metric icons and the black, green, and white interface style. Metric values and details align with the start of their labels, after the icon, both on screen and in JPG exports. Text exports, copied text, and JPG exports exclude locations, per-gear maxima, and data notes.
 
-Both text actions include the same data, including the ride title, summary metrics, endpoint coordinates with map links, per-gear maxima, and any data-quality notes.
+The **Locations** share icon offers **Copy text** and **Share as message**, including the ride title, the three location labels, coordinates at source precision in map URLs, and available address components. The **Max for each gear** share icon offers **Share JPG** and **Save to gallery** for the complete table, whose columns are centered and numeric values are right-aligned within each column. The highest available RPM value is highlighted in amber (`#FFB300`) on screen and in the JPG only when the last displayed gear row does not contain that maximum. If the last row contains the maximum, including a tie, no RPM value is highlighted. Otherwise, earlier ties share the highlight; unavailable values remain white. This section appears immediately after **Telemetry**.
+
+### Location Details Lookup
+
+After a ride is imported, the app queries [Photon's public demo service](https://github.com/komoot/photon) for the starting point, ending point, and first maximum-speed location, deduplicating identical coordinates. Available components are displayed under their coordinates and included in copied/shared location text: street and house number (`street`, `housenumber`), neighborhood (`district`), city (`city`), and state/province (`state`). Missing components are omitted; other address levels are never substituted for a neighborhood or street. Missing results, network failures, and offline use omit address details without a data note. Coordinates remain visible with their map controls.
+
+Requests run in the background, sequentially and at least 1.1 seconds apart, with five-second connection/read timeouts. Only selected address components are retained. A new cache schema refreshes previous neighborhood-only results. Positive results are cached on-device for 30 days; empty or failed lookups are cached for 10 minutes. Only endpoint/maximum-speed coordinates are sent to `photon.komoot.io`; the CSV, ride title, and remaining track are not uploaded. Reverse-geocoded addresses are approximate and depend on OpenStreetMap coverage. Credits: location data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright), available under the [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/), served by [Photon](https://github.com/komoot/photon). Credits are documented here; they are omitted from Locations and shared text. The public service permits reasonable request volumes, may throttle extensive use, and has no availability guarantee; larger deployments should use their own Photon instance.
+
+Telemetry canvas heights are shared by screen and JPG: speed 242 dp (+10%), RPM 198 dp (-10%), and gear 80⅔ dp (10% taller than the previous 73⅓ dp). Title spacing and top plot margins are reduced; the compact gear panel uses smaller axis labels. Export includes every complete panel regardless of screen scrolling. Telemetry distance axes use at least four integer ticks, spaced by 5 or 10 times powers of ten; the axis rounds up to a whole tick. Rides below 15 km display meters to preserve useful detail without decimal ticks; other rides display kilometers. Tick density adapts to available width and text size. All three panels use the same GPS distance domain. Speed and Engine RPM have compact 20 dp green zoom icons with 48 dp touch targets that open a landscape screen with a larger single chart, a green back-arrow icon, a title centered between the back and share controls, a full-width green divider below the header, and JPG sharing/gallery actions. Zoom exports use the same plotting functions and axis rules in a landscape image at least 1920 × 1080 pixels. Rotation and activity recreation preserve the selected zoom chart.
 
 ## Location Links
 
 Every geographic location or coordinate displayed in the application must include an accessible link to open that location in a compatible external application, such as Google Maps. This applies to ride endpoints and all future location displays.
 
 Links must target the corresponding coordinates at their source precision, regardless of display formatting, and allow Android to handle compatible applications. If no compatible application is available, the application must show a clear message. This behavior is implemented using Android location intents.
+
+The interface omits the Calculation notes panel; calculation conventions remain documented in this README.
 
 ## Visual Style
 
@@ -125,12 +135,12 @@ The first version implements:
 - An `Open Rideology app` button launches the installed RIDEOLOGY application, or explains when it is unavailable.
 - `Open CSV` opens an Android chooser for compatible installed file browsers using `ACTION_GET_CONTENT`. Browsers must support returning an openable file URI to appear in this chooser.
 - A parser that selects columns by name, supports variable metadata before the data header, ignores unused columns, and reads quoted CSV fields, UTF-8 byte order marks, and common line endings.
-- Ride statistics, per-gear maxima, endpoint coordinates and the maximum-speed location with green map-pin buttons, and visible data-quality notes. The maximum-speed location uses the first sample attaining the maximum wheel speed. If that sample lacks valid coordinates, the location is unavailable; coordinates from a different sample are never substituted. Shared reports include this location and its map link.
+- Ride statistics, per-gear maxima, endpoint coordinates and the maximum-speed location with green map-pin buttons, and visible data-quality notes. The maximum-speed location uses the first sample attaining the maximum wheel speed. If that sample lacks valid coordinates, the location is unavailable; coordinates from a different sample are never substituted. Location text exports include this location and its map link.
 - Plain-text report copying and sharing through the summary header menu.
 - A black, white, and green terminal-inspired interface, with the app launcher icon beside the title. `Data notes` appears only when import finds data-quality issues; using a supported encoding does not create a note.
 - Background processing and reloading of the selected file after activity recreation.
 
-Import supports up to 500,000 samples per file. Files must use comma-separated fields. Encoding detection tries strict UTF-8 first, then Windows-31J (Shift-JIS); BOM-marked UTF-16 is also supported. Characters already replaced or damaged by the exporter cannot be recovered. Malformed Windows-31J characters are omitted from the title so they do not prevent importing valid measurements; malformed measurement values remain subject to normal validation. Unrecognized gear values are silently excluded from the per-gear table; valid gears and other statistics remain available. Place-name lookup, saved ride history, and persistent imported data are not implemented. A device export confirmed that RIDEOLOGY uses `ACTION_SEND_MULTIPLE` with `text/plain`, including when sharing one log. End-to-end file access from a real export still needs device verification.
+Import supports up to 500,000 samples per file. Files must use comma-separated fields. Encoding detection tries strict UTF-8 first, then Windows-31J (Shift-JIS); BOM-marked UTF-16 is also supported. Characters already replaced or damaged by the exporter cannot be recovered. Malformed Windows-31J characters are omitted from the title so they do not prevent importing valid measurements; malformed measurement values remain subject to normal validation. Unrecognized gear values are silently excluded from the per-gear table; valid gears and other statistics remain available. Saved ride history and persistent imported ride data are not implemented; address lookup results are cached separately. A device export confirmed that RIDEOLOGY uses `ACTION_SEND_MULTIPLE` with `text/plain`, including when sharing one log. End-to-end file access from a real export still needs device verification.
 
 ## Technology Stack
 
@@ -188,13 +198,13 @@ See [AGENTS.md](AGENTS.md) for project development guidelines. All project docum
 
 ## Telemetry and Speed Distribution
 
-The telemetry section stacks speed (blue), engine RPM (purple), and gear (green) panels. All use the same cumulative GPS-distance domain in kilometers. Speed and RPM show labeled markers at the first occurrence of their respective maxima. Duplicate maximum-description footers and the GPS-distance footer are omitted; the engine panel title is `Engine RPM`. Gear uses horizontal steps followed by vertical transitions, with neutral at N and numbered gears at 1–6. Unknown gears interrupt the line. Missing measurements and recording gaps also interrupt their corresponding traces.
+The telemetry section stacks speed (blue), engine RPM (purple), and gear (green) panels. All use the same cumulative GPS-distance domain in kilometers. Speed and RPM show labeled red markers (`#FF4444`) at the first occurrence of their respective maxima, including the zoom views and JPG exports. Duplicate maximum-description footers and the GPS-distance footer are omitted; the engine panel title is `Engine RPM`. Gear uses horizontal steps followed by vertical transitions, with neutral at N and numbered gears at 1–6. Unknown gears interrupt the line. Missing measurements and recording gaps also interrupt their corresponding traces.
 
 GPS interval distance uses consecutive valid coordinates and the existing haversine calculation with an Earth radius of 6,371,000 meters. Intervals longer than 1.5 times the median sampling interval add no distance. Missing coordinates are not bridged. These chart distances differ from the summary's wheel-speed distance estimate.
 
 The speed distribution uses the same eligible GPS intervals, assigning each interval's distance to the ending sample's speed. Fixed 20 km/h bins include the lower boundary and exclude the upper boundary: [0,20), [20,40), and so on. Empty bins between occupied bins remain visible. Missing speeds are excluded; zero speeds can receive GPS distance. Distances are summed without intermediate rounding and displayed above the blue bars with two decimal places. The bar chart uses compact bars and speed-range tick labels rotated 45 degrees. It scrolls horizontally when required.
 
-Speed, RPM, and distance scales start at zero and round upward using tick steps based on 1, 2, or 5 times a power of ten. An external reference implementation was not supplied; these defaults do not claim to reproduce its original scales, boundary inclusion, or rounding. Chart geometry and GPS statistics are prepared outside the main UI thread.
+Speed and RPM scales start at zero and round upward using tick steps based on 1, 2, or 5 times a power of ten. Telemetry distance scales use integer 5/10 steps and meters for rides below 15 km, as described above. An external reference implementation was not supplied; these defaults do not claim to reproduce its original scales, boundary inclusion, or rounding. Chart geometry and GPS statistics are prepared outside the main UI thread.
 
 ### Exporting Chart Images
 
