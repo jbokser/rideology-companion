@@ -51,6 +51,7 @@
 ## Telemetry and Speed Distribution Charts
 
 - Use one cumulative GPS distance domain for speed, engine RPM, and gear panels. Chart distances are separate from the existing wheel-speed distance estimate in the summary.
+- Always display the telemetry distance axis in kilometers, using uniform intervals from the 1–2–5 × 10ⁿ progression and decimal precision appropriate to the interval. Aim for approximately 5–10 major ticks when space permits, without enforcing a minimum tick count; prioritize label readability and preserve the underlying data values.
 - Exclude GPS distance between consecutive samples when their time interval exceeds 1.5 times the median sampling interval. Do not bridge missing coordinates.
 - Assign eligible GPS interval distance to the speed of the ending sample for the speed distribution. Do not substitute duration or wheel-speed integration.
 - Mark the first occurrence of maximum speed and maximum RPM. Represent neutral as N and numbered gears as 1–6; unknown gears interrupt the stepped line.

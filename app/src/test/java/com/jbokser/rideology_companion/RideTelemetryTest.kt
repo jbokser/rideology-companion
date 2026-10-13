@@ -11,23 +11,42 @@ class RideTelemetryTest {
     private fun analyze(vararg samples: Sample) = RideTelemetryAnalyzer.analyze(RideLog("Ride", samples.toList(), emptyList()))
 
     @Test
-    fun distanceAxesUseAtLeastFourIntegerTicksAndFiveOrTenSteps() {
-        for (distance in listOf(0.0, 0.001, 0.22, 3.0, 14.99, 15.0, 25.0, 40.0, 51.0, 150.0, 9999.0)) {
-            for (capacity in 4..11) {
+    fun distanceAxesUseKilometersAndReadableNiceStepsAcrossRanges() {
+        for (distance in listOf(0.000001, 0.001, 0.22, 1.3, 1.89, 2.7, 3.0, 14.99, 15.0, 25.0, 40.0, 51.0, 150.0, 9999.0)) {
+            val defaultAxis = RideChartCalculations.distanceAxis(distance)
+            val defaultCount = kotlin.math.round(defaultAxis.scale.maximum / defaultAxis.scale.tickStep).toInt() + 1
+            assertTrue(defaultCount in 5..10)
+            for (capacity in 2..10) {
                 val axis = RideChartCalculations.distanceAxis(distance, capacity)
                 assertTrue(axis.domainKm >= distance)
-                val count = (axis.scale.maximum / axis.scale.tickStep).toInt() + 1
-                assertTrue(count in 4..capacity)
-                assertEquals(axis.scale.tickStep.toLong().toDouble(), axis.scale.tickStep, 0.0)
-                val stepText = axis.scale.tickStep.toLong().toString().trimEnd('0')
-                assertTrue(stepText == "5" || stepText == "1")
-                assertEquals(if (distance < 15) "m" else "km", axis.unit)
+                val count = kotlin.math.round(axis.scale.maximum / axis.scale.tickStep).toInt() + 1
+                assertTrue(count in 2..capacity)
+                val magnitude = Math.pow(10.0, kotlin.math.floor(kotlin.math.log10(axis.scale.tickStep)))
+                val fraction = axis.scale.tickStep / magnitude
+                assertTrue(listOf(1.0, 2.0, 5.0).any { kotlin.math.abs(it - fraction) < 0.000001 })
+                assertEquals("km", axis.unit)
+                assertEquals(1.0, axis.unitsPerKm, 0.0)
+                val labels = (0 until count).map { RideReport.format(it * axis.scale.tickStep, axis.fractionDigits) }
+                assertEquals(count, labels.distinct().size)
             }
         }
-        assertEquals(250.0, RideChartCalculations.distanceAxis(0.22).scale.maximum, 0.0)
-        assertEquals(50.0, RideChartCalculations.distanceAxis(0.22).scale.tickStep, 0.0)
-        assertEquals(10.0, RideChartCalculations.distanceAxis(40.0).scale.tickStep, 0.0)
-        assertEquals(60.0, RideChartCalculations.distanceAxis(51.0, 7).scale.maximum, 0.0)
+        val shortAxis = RideChartCalculations.distanceAxis(0.22)
+        assertEquals(0.25, shortAxis.scale.maximum, 0.000001)
+        assertEquals(0.05, shortAxis.scale.tickStep, 0.000001)
+        assertEquals(2, shortAxis.fractionDigits)
+        assertEquals("0.05", RideReport.format(shortAxis.scale.tickStep, shortAxis.fractionDigits))
+        assertEquals(5.0, RideChartCalculations.distanceAxis(40.0).scale.tickStep, 0.0)
+    }
+
+    @Test
+    fun distanceAxesDoNotPadToAMinimumTickCount() {
+        val narrowAxis = RideChartCalculations.distanceAxis(3.0, 2)
+        assertEquals(5.0, narrowAxis.scale.maximum, 0.0)
+        assertEquals(5.0, narrowAxis.scale.tickStep, 0.0)
+        val zeroAxis = RideChartCalculations.distanceAxis(0.0)
+        assertEquals("km", zeroAxis.unit)
+        assertTrue(zeroAxis.domainKm > 0)
+        assertEquals(zeroAxis.scale.maximum, zeroAxis.scale.tickStep, 0.0)
     }
 
     @Test
