@@ -14,6 +14,10 @@ Author: **Juan S. Bokser** ([GitHub](https://github.com/jbokser), [email](mailto
 
 This development was inspired by the [rideology2gpx](https://github.com/jbokser/rideology2gpx) project.
 
+## License
+
+Rideology Companion is licensed under the GNU General Public License version 3 (GPL-3.0-only). See [LICENSE](LICENSE) for the full license text.
+
 ## Export a ride from Rideology
 
 ![Rideology Log List screenshot](docs/images/rideology_screenshot.png)
