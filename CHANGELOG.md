@@ -4,12 +4,15 @@ Significant changes to Rideology Companion are listed here. Published releases a
 
 ## Unreleased
 
+## [v0.1b3](https://github.com/jbokser/rideology-companion/releases/tag/v0.1b3) — 2026-16-09 — Prerelease
+
 ### Changed
 
 - Display telemetry distance axes consistently in kilometers, with uniform 1–2–5 tick intervals and precision adapted to the interval.
 
 ### Added
 
+- Persistent CSV import history.
 - GNU General Public License version 3 (GPL-3.0-only), with the full license text and a README notice.
 - This changelog and development guidelines for maintaining release history.
 

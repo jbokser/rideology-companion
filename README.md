@@ -80,7 +80,6 @@ Run instrumented tests with a connected device or running emulator:
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-Unit tests cover parsing, missing and invalid fields, timing gaps, stopped rides, maxima, and coordinate formatting. Instrumented tests cover CSV attachment reception, summary presentation, activity recreation, missing attachments, clipboard copying, the plain-text payload passed to the Android Sharesheet, and scrollbar touch target size, dragging, track taps, and accessibility adjustment. A synthetic CSV fixture is included only in debug builds at `app/src/debug/res/raw/sample_ride.csv`.
 
 ### GitHub Releases
 
