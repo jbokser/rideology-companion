@@ -139,10 +139,10 @@ internal fun DrawScope.axes(
     drawLine(Color.White, Offset(left, top + height), Offset(left + width, top + height), 1.dp.toPx())
     if (horizontalTicks) {
         val axis = requireNotNull(distanceAxis)
-        val ticks = (axis.scale.maximum / axis.scale.tickStep).toInt()
+        val ticks = kotlin.math.round(axis.scale.maximum / axis.scale.tickStep).toInt()
         for (index in 0..ticks) {
             val value = index * axis.scale.tickStep
-            val label = RideReport.format(value, 0)
+            val label = RideReport.format(value, axis.fractionDigits)
             val x = left + (value / axis.scale.maximum * width).toFloat()
             drawLine(Color.White, Offset(x, top + height), Offset(x, top + height + 3.dp.toPx()), 1.dp.toPx())
             drawContext.canvas.nativeCanvas.drawText(label, (x - paint.measureText(label) / 2).coerceIn(0f, (size.width - paint.measureText(label)).coerceAtLeast(0f)),
@@ -251,13 +251,13 @@ internal fun DrawScope.drawDistributionPlot(bins: List<SpeedDistanceBin>, scale:
 
 /** Determines a shared distance domain using the largest label at the standard axis font size. */
 internal fun telemetryDistanceAxis(distanceKm: Double, width: Float, paint: Paint, gap: Float): DistanceAxis {
-    var ticks = 11
-    while (ticks > 4) {
+    var ticks = 10
+    while (ticks > 2) {
         val axis = RideChartCalculations.distanceAxis(distanceKm, ticks)
-        val count = (axis.scale.maximum / axis.scale.tickStep).toInt()
-        val labelWidth = paint.measureText(RideReport.format(axis.scale.maximum, 0))
+        val count = kotlin.math.round(axis.scale.maximum / axis.scale.tickStep).toInt()
+        val labelWidth = paint.measureText(RideReport.format(axis.scale.maximum, axis.fractionDigits))
         if (width / count >= labelWidth + gap) return axis
         ticks--
     }
-    return RideChartCalculations.distanceAxis(distanceKm, 4)
+    return RideChartCalculations.distanceAxis(distanceKm, 2)
 }

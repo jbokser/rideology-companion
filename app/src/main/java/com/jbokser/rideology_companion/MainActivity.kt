@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -19,6 +20,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.border
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
@@ -49,6 +52,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextAlign
 import com.jbokser.rideology_companion.ui.charts.TextExportMenu
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
@@ -66,6 +70,9 @@ import com.jbokser.rideology_companion.ui.charts.Channel
 import com.jbokser.rideology_companion.ui.charts.TelemetryZoomScreen
 
 class MainActivity : ComponentActivity() {
+    private val historyStore by lazy { CsvImportHistory(java.io.File(filesDir, "csv_history")) }
+    private var historyEntries by mutableStateOf<List<CsvHistoryEntry>>(emptyList())
+    private var showingHistory by mutableStateOf(false)
     private var zoomChannel by mutableStateOf<Channel?>(null)
     private var summary by mutableStateOf<RideSummary?>(null)
     private var loading by mutableStateOf(false)
@@ -82,14 +89,26 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.BLACK)
         )
+        lifecycleScope.launch {
+            try {
+                historyEntries = withContext(Dispatchers.IO) { historyStore.entries() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                Toast.makeText(this@MainActivity, "CSV history could not be read.", Toast.LENGTH_LONG).show()
+            }
+        }
         setContent {
             RideologyCompanionTheme {
                 val screenState = rememberSaveableStateHolder()
                 val zoom = zoomChannel
                 val ride = summary
-                if (zoom != null && ride != null) TelemetryZoomScreen(ride, zoom, ::closeZoom)
+                if (showingHistory) CsvHistoryScreen(historyEntries,
+                    onBack = { showingHistory = false },
+                    onSelect = { load(Uri.fromFile(historyStore.file(it))) }, onDelete = ::deleteHistoryEntry)
+                else if (zoom != null && ride != null) TelemetryZoomScreen(ride, zoom, ::closeZoom)
                 else screenState.SaveableStateProvider("ride") {
-                    RideScreen(summary, loading, error, ::load, ::openMap, ::copySummary, ::shareSummary, ::openRideology, ::openZoom)
+                    RideScreen(summary, loading, error, ::load, ::openMap, ::copySummary, ::shareSummary, ::openRideology, ::openZoom, { showingHistory = true }, historyEntries.isNotEmpty())
                 }
                 if (sharedFiles.isNotEmpty()) AlertDialog(
                     onDismissRequest = { sharedFiles = emptyList() },
@@ -115,16 +134,19 @@ class MainActivity : ComponentActivity() {
                 Intent.EXTRA_STREAM, ArrayList(pending.map(Uri::parse))
             ))
         } else if (restored != null) load(restored) else receive(intent)
+        showingHistory = savedInstanceState?.getBoolean("showing_history") ?: false
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         closeZoom()
+        showingHistory = false
         receive(intent)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("showing_history", showingHistory)
         zoomChannel?.let { outState.putString("zoom_channel", it.name) }
         selectedUri?.let { outState.putString("selected_uri", it.toString()) }
         if (sharedFiles.isNotEmpty()) outState.putStringArrayList("shared_uris", ArrayList(sharedFiles.map { it.first.toString() }))
@@ -166,16 +188,30 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun load(uri: Uri) {
+        showingHistory = false
         sharedFiles = emptyList()
         selectedUri = uri
         importJob?.cancel()
         importJob = lifecycleScope.launch {
             loading = true; error = null; summary = null
             try {
-                summary = withContext(Dispatchers.IO) {
-                    contentResolver.openInputStream(uri)?.use {
-                        RideAnalyzer.analyze(RideCsvParser.parse(it))
-                    } ?: throw IllegalArgumentException("The selected file could not be opened.")
+                val result = withContext(Dispatchers.IO) {
+                    val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        ?: throw IllegalArgumentException("The selected file could not be opened.")
+                    val ride = RideAnalyzer.analyze(RideCsvParser.parse(bytes.inputStream()))
+                    ensureActive()
+                    val saved = runCatching {
+                        val entry = historyStore.record(bytes, ride.title)
+                        entry to historyStore.entries()
+                    }
+                    ride to saved
+                }
+                summary = result.first
+                result.second.onSuccess { (entry, entries) ->
+                    historyEntries = entries
+                    selectedUri = Uri.fromFile(historyStore.file(entry))
+                }.onFailure {
+                    Toast.makeText(this@MainActivity, "The ride was opened, but could not be saved to CSV history.", Toast.LENGTH_LONG).show()
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -187,6 +223,30 @@ class MainActivity : ComponentActivity() {
                 }
             } finally {
                 if (isActive) loading = false
+            }
+        }
+    }
+
+    private fun deleteHistoryEntry(entry: CsvHistoryEntry) {
+        lifecycleScope.launch {
+            try {
+                importJob?.join()
+                historyEntries = withContext(Dispatchers.IO) {
+                    historyStore.delete(entry)
+                    historyStore.entries()
+                }
+                if (historyEntries.isEmpty()) showingHistory = false
+                if (selectedUri == Uri.fromFile(historyStore.file(entry))) {
+                    selectedUri = null
+                    summary = null
+                    error = null
+                    closeZoom()
+                    setIntent(Intent(this@MainActivity, MainActivity::class.java))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                Toast.makeText(this@MainActivity, "The saved CSV could not be deleted. Please try again.", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -245,7 +305,7 @@ class MainActivity : ComponentActivity() {
 private fun RideScreen(
     summary: RideSummary?, loading: Boolean, error: String?, onOpen: (Uri) -> Unit,
     onMap: (Coordinate) -> Unit, onCopy: (RideSummary) -> Unit, onShare: (RideSummary) -> Unit,
-    onRideology: () -> Unit, onZoom: (Channel) -> Unit
+    onRideology: () -> Unit, onZoom: (Channel) -> Unit, onHistory: () -> Unit, hasHistory: Boolean
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val resources = androidx.compose.ui.platform.LocalResources.current
@@ -283,6 +343,12 @@ private fun RideScreen(
                 },
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
                     Text(if (summary == null) "Open CSV" else "Open another CSV", color = MaterialTheme.colorScheme.onSurface)
+                }
+                if (hasHistory) {
+                    OutlinedButton(onClick = onHistory,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
+                        Text("Previously loaded CSVs", color = MaterialTheme.colorScheme.onSurface)
+                    }
                 }
                 OutlinedButton(onClick = onRideology,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
@@ -338,6 +404,57 @@ private fun RideScreen(
             }
             RideScrollbar(scrollState, Modifier.align(Alignment.CenterEnd).width(48.dp).fillMaxHeight().padding(vertical = 8.dp))
         }
+    }
+}
+
+@Composable
+private fun CsvHistoryScreen(
+    entries: List<CsvHistoryEntry>, onBack: () -> Unit,
+    onSelect: (CsvHistoryEntry) -> Unit, onDelete: (CsvHistoryEntry) -> Unit
+) {
+    var pendingDelete by remember { mutableStateOf<CsvHistoryEntry?>(null) }
+    BackHandler(onBack = onBack)
+    Scaffold { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                IconButton(onClick = onBack) {
+                    Icon(painterResource(R.drawable.ic_back), contentDescription = "Back",
+                        tint = MaterialTheme.colorScheme.primary)
+                }
+                Text("Previously loaded CSVs", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.Center)
+                Spacer(Modifier.width(48.dp))
+            }
+            HorizontalDivider(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (entries.isEmpty()) item { Text("No CSV files have been imported yet.") }
+                items(entries, key = { it.id }) { entry ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { onSelect(entry) }, modifier = Modifier.weight(1f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp)) {
+                            Text(entry.title, style = RideTitleStyle, color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.fillMaxWidth())
+                        }
+                        IconButton(onClick = { pendingDelete = entry }) {
+                            Icon(painterResource(R.drawable.ic_delete), contentDescription = "Delete ${entry.title}",
+                                tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pendingDelete?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Delete saved CSV?") },
+            text = { Text("Remove “${entry.title}” from history and delete its saved copy?") },
+            confirmButton = { TextButton(onClick = { pendingDelete = null; onDelete(entry) }) { Text("Delete") } },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } }
+        )
     }
 }
 

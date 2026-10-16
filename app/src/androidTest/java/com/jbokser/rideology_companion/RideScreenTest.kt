@@ -38,6 +38,62 @@ class RideScreenTest {
     }
 
     @Test
+    fun historyListsImportedRideAndReopensItAfterRecreation() {
+        rule.activityRule.scenario.onActivity { activity ->
+            activity.startActivity(Intent(activity, MainActivity::class.java).apply {
+                action = Intent.ACTION_SEND
+                type = "text/csv"
+                putExtra(Intent.EXTRA_STREAM, Uri.parse("android.resource://${activity.packageName}/${R.raw.sample_ride}"))
+            })
+        }
+        rule.waitUntil(10000) { rule.onAllNodesWithText("Sample ride").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("Previously loaded CSVs").performScrollTo().performClick()
+        rule.onAllNodesWithText("Sample ride").assertCountEquals(1)
+        rule.activityRule.scenario.recreate()
+        rule.waitUntil(10000) { rule.onAllNodesWithText("Sample ride").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithContentDescription("Back").assertIsDisplayed()
+        rule.onNodeWithText("Last 10 imports · Most recent first").assertDoesNotExist()
+        rule.onNodeWithText("Sample ride").performClick()
+        rule.waitUntil(10000) { rule.onAllNodesWithText("Ride summary").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("Sample ride").assertExists()
+        rule.onNodeWithText("Previously loaded CSVs").performScrollTo().performClick()
+        rule.onAllNodesWithText("Sample ride").assertCountEquals(1)
+        rule.onNodeWithContentDescription("Back").performClick()
+        rule.onNodeWithText("Ride summary").assertExists()
+    }
+
+    @Test
+    fun deletingHistoryEntryRequiresConfirmation() {
+        rule.activityRule.scenario.onActivity { activity ->
+            val history = com.jbokser.rideology_companion.data.CsvImportHistory(java.io.File(activity.filesDir, "csv_history"))
+            history.entries().forEach(history::delete)
+            activity.startActivity(Intent(activity, MainActivity::class.java).apply {
+                action = Intent.ACTION_SEND
+                type = "text/csv"
+                putExtra(Intent.EXTRA_STREAM, Uri.parse("android.resource://${activity.packageName}/${R.raw.sample_ride}"))
+            })
+        }
+        rule.waitUntil(10000) { rule.onAllNodesWithText("Sample ride").fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithText("Previously loaded CSVs").performScrollTo().performClick()
+        rule.onNodeWithContentDescription("Delete Sample ride").performClick()
+        rule.onNodeWithText("Delete saved CSV?").assertIsDisplayed()
+        rule.onNodeWithText("Cancel").performClick()
+        rule.onNodeWithText("Sample ride").assertExists()
+        rule.onNodeWithContentDescription("Delete Sample ride").performClick()
+        rule.onNodeWithText("Delete", useUnmergedTree = true).performClick()
+        rule.waitUntil(10000) { rule.onAllNodesWithContentDescription("Back").fetchSemanticsNodes().isEmpty() }
+        rule.onNodeWithText("Open CSV").assertExists()
+        rule.onNodeWithText("Getting started").assertExists()
+        rule.onNodeWithText("Ride summary").assertDoesNotExist()
+        rule.onNodeWithText("Sample ride").assertDoesNotExist()
+        rule.onNodeWithText("Previously loaded CSVs").assertDoesNotExist()
+        rule.activityRule.scenario.recreate()
+        rule.waitForIdle()
+        rule.onNodeWithText("Open CSV").assertExists()
+        rule.onNodeWithText("Previously loaded CSVs").assertDoesNotExist()
+    }
+
+    @Test
     fun importedRideDisplaysTelemetryAndDistanceDistribution() {
         rule.activityRule.scenario.onActivity { activity ->
             activity.startActivity(Intent(activity, MainActivity::class.java).apply {
@@ -310,7 +366,7 @@ class RideScreenTest {
         }
         instrumentation.addMonitor(monitor)
         try {
-            rule.onNodeWithText("Ride log analysis by @jbokser · v0.1b").assertExists()
+            rule.onNodeWithText("Ride log analysis by @jbokser · v${BuildConfig.VERSION_NAME}").assertExists()
             rule.onNodeWithText("Open Rideology app").assertIsDisplayed()
             rule.onNodeWithTag("app_icon").assertIsDisplayed()
             rule.onNodeWithText("Open CSV").performClick()

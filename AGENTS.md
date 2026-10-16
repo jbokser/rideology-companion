@@ -11,6 +11,17 @@
 - Keep the README aligned with the implementation. Clearly distinguish implemented functionality from planned features.
 - Update the README when changes affect the project description, functionality, or setup and build instructions.
 
+## Project Changelog
+
+- Maintain `CHANGELOG.md` at the repository root in neutral, professional English, and keep a link to it in the README.
+- Record the main user-visible changes and significant build, distribution, or licensing changes. Summarize their effect rather than copying every commit message.
+- Update the `Unreleased` section in the same change that adds, changes, fixes, or removes significant functionality. Keep this section first and do not assign pending changes to an already published version.
+- Include both published releases and prereleases in reverse chronological order, with the newest publication first. Use the exact version tag, the GitHub publication date in UTC (`YYYY-MM-DD`), an explicit Release or Prerelease label, and a link to the publication.
+- Verify publication status and dates against GitHub Releases. A Git tag or version change alone does not establish a published release; do not invent release dates or present unpublished tags as published versions.
+- When preparing a release, move the applicable `Unreleased` entries into its version section and verify the changes against the previous published version. Finalize the date and publication link from GitHub after publication; clearly mark any entry prepared before publication as pending.
+- Group entries under `Added`, `Changed`, `Fixed`, or `Removed` where useful, omitting empty groups. Keep historical entries scoped to what their tagged version contains, and correct them only when evidence shows an error.
+- For the first published version, summarize the implemented baseline. For subsequent versions, describe changes since the previous published version, including relevant changes from intervening unpublished tags.
+
 ## User Interface Style
 
 - Use a dark visual style with black backgrounds and white text.
@@ -51,6 +62,7 @@
 ## Telemetry and Speed Distribution Charts
 
 - Use one cumulative GPS distance domain for speed, engine RPM, and gear panels. Chart distances are separate from the existing wheel-speed distance estimate in the summary.
+- Always display the telemetry distance axis in kilometers, using uniform intervals from the 1–2–5 × 10ⁿ progression and decimal precision appropriate to the interval. Aim for approximately 5–10 major ticks when space permits, without enforcing a minimum tick count; prioritize label readability and preserve the underlying data values.
 - Exclude GPS distance between consecutive samples when their time interval exceeds 1.5 times the median sampling interval. Do not bridge missing coordinates.
 - Assign eligible GPS interval distance to the speed of the ending sample for the speed distribution. Do not substitute duration or wheel-speed integration.
 - Mark the first occurrence of maximum speed and maximum RPM. Represent neutral as N and numbered gears as 1–6; unknown gears interrupt the stepped line.

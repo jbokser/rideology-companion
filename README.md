@@ -14,6 +14,10 @@ Author: **Juan S. Bokser** ([GitHub](https://github.com/jbokser), [email](mailto
 
 This development was inspired by the [rideology2gpx](https://github.com/jbokser/rideology2gpx) project.
 
+## License
+
+Rideology Companion is licensed under the GNU General Public License version 3 (GPL-3.0-only). See [LICENSE](LICENSE) for the full license text.
+
 ## Export a ride from Rideology
 
 ![Rideology Log List screenshot](docs/images/rideology_screenshot.png)
@@ -33,6 +37,8 @@ Requires Android 7.0 or later.
 5. Tap **Install**, then **Open** to launch Rideology Companion.
 
 To update the app, download and install the APK from a newer release in the same way.
+
+See [CHANGELOG.md](CHANGELOG.md) for the main changes in each release and prerelease, with the newest entries first.
 
 ## Useful notes for developers
 
@@ -74,7 +80,6 @@ Run instrumented tests with a connected device or running emulator:
 ./gradlew :app:connectedDebugAndroidTest
 ```
 
-Unit tests cover parsing, missing and invalid fields, timing gaps, stopped rides, maxima, and coordinate formatting. Instrumented tests cover CSV attachment reception, summary presentation, activity recreation, missing attachments, clipboard copying, the plain-text payload passed to the Android Sharesheet, and scrollbar touch target size, dragging, track taps, and accessibility adjustment. A synthetic CSV fixture is included only in debug builds at `app/src/debug/res/raw/sample_ride.csv`.
 
 ### GitHub Releases
 
@@ -96,8 +101,9 @@ Use an existing release signing key if the app has already been distributed. Oth
 For each release:
 
 1. Update `versionName` and increment `versionCode` in `app/build.gradle.kts`.
-2. Commit and push the changes, including the workflow for the first release.
-3. Create and push the matching tag, for example:
+2. Prepare the version entry in [CHANGELOG.md](CHANGELOG.md) from the applicable `Unreleased` changes, following [AGENTS.md](AGENTS.md). Mark publication details as pending until the release is published.
+3. Commit and push the changes, including the workflow for the first release.
+4. Create and push the matching tag, for example:
 
 ```bash
 git tag -a v0.2.0-beta.1 -m "Release v0.2.0-beta.1"
@@ -107,6 +113,8 @@ git push origin v0.2.0-beta.1
 The example assumes `versionName = "0.2.0-beta.1"`. Track the run in GitHub's **Actions** tab and download `rideology-companion-v0.2.0-beta.1.apk` from **Releases** after success. A missing secret, mismatched tag, failing test, or invalid signature prevents publication. Existing releases are not overwritten; reruns cannot replace a published release. Instrumented tests still require a device or emulator and are not run by this workflow.
 
 Run the release metadata checks locally with `python3 -m unittest discover -s scripts -p 'test_*.py'`.
+
+After publication, finalize the changelog entry with the GitHub publication date in UTC, publication link, and Release or Prerelease label.
 
 ### Project Structure
 

@@ -29,21 +29,24 @@ data class RideTelemetry(
 
 data class DistanceAxis(val scale: ChartScale, val unit: String, val unitsPerKm: Double) {
     val domainKm: Double get() = scale.maximum / unitsPerKm
+    val fractionDigits: Int get() = ceil(-log10(scale.tickStep)).toInt().coerceAtLeast(0)
 }
 
 object RideChartCalculations {
-    /** Uses integer 5/10 steps and switches short rides to meters. */
-    fun distanceAxis(distanceKm: Double, maximumTicks: Int = 6): DistanceAxis {
-        val unitsPerKm = if (distanceKm < 15) 1000.0 else 1.0
-        val maximum = distanceKm.coerceAtLeast(0.0) * unitsPerKm
-        val intervals = (maximumTicks - 1).coerceIn(3, 10)
-        var step = 5.0
-        while (ceil(maximum / step) > intervals) {
-            val magnitude = 10.0.pow(floor(log10(step)))
-            step = if (step / magnitude >= 5) magnitude * 10 else magnitude * 5
+    /** Uses kilometer ticks from the 1–2–5 progression without enforcing a minimum tick count. */
+    fun distanceAxis(distanceKm: Double, maximumTicks: Int = 10): DistanceAxis {
+        if (distanceKm <= 0) return DistanceAxis(ChartScale(1.0, 1.0), "km", 1.0)
+        val intervals = (maximumTicks - 1).coerceIn(1, 9)
+        val target = distanceKm / intervals
+        val magnitude = 10.0.pow(floor(log10(target)))
+        val fraction = target / magnitude
+        val step = when {
+            fraction <= 1 -> magnitude
+            fraction <= 2 -> 2 * magnitude
+            fraction <= 5 -> 5 * magnitude
+            else -> 10 * magnitude
         }
-        val count = ceil(maximum / step).coerceAtLeast(3.0)
-        return DistanceAxis(ChartScale(count * step, step), if (unitsPerKm == 1000.0) "m" else "km", unitsPerKm)
+        return DistanceAxis(ChartScale(ceil(distanceKm / step) * step, step), "km", 1.0)
     }
 
     fun distribution(telemetry: RideTelemetry): List<SpeedDistanceBin> {
