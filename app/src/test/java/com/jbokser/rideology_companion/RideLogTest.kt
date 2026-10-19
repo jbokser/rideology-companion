@@ -10,6 +10,63 @@ class RideLogTest {
     private fun analyze(csv: String) = RideAnalyzer.analyze(RideCsvParser.parse(StringReader(csv.trimIndent())))
 
     @Test
+    fun damagedTitleIsRecoveredOnlyFromMatchingExportFilename() {
+        val bytes = "Title,Caf".toByteArray() + byteArrayOf(0xfc.toByte(), 0xfc.toByte()) +
+            " YPF desde Tecn".toByteArray() + byteArrayOf(0xfc.toByte(), 0xfc.toByte()) +
+            "polis ".toByteArray() + byteArrayOf(0xfc.toByte(), 0xfc.toByte()) +
+            "\nelapsed_msec,wheel_speed(km/h)\n0,0\n1000,36".toByteArray()
+        val expected = "Café YPF desde Tecnópolis ☕"
+        val recovered = RideCsvParser.parse(bytes.inputStream(), "Riding_${expected}_20261019101528.csv")
+        assertEquals(expected, recovered.title)
+        assertEquals(36.0, recovered.samples.last().speed!!, 0.001)
+        assertEquals(expected, RideCsvParser.parse(bytes.inputStream(), "cached.csv", savedTitle = recovered.title).title)
+        for (name in listOf(null, "Riding_Café Shell desde Tecnópolis ☕_20261019101528.csv",
+            "${expected}.csv", "Riding_${expected}_bad.csv")) {
+            assertEquals("Caf YPF desde Tecnpolis",
+                RideCsvParser.parse(bytes.inputStream(), name).title)
+        }
+    }
+
+    @Test
+    fun validOrAbsentHeaderTitlesAreNotReplacedByFilename() {
+        val measurements = "elapsed_msec,wheel_speed(km/h)\n0,0\n1000,36"
+        val name = "Riding_Other ride_20261019101528.csv"
+        assertEquals("Café ☕", RideCsvParser.parse("Title,Café ☕\n$measurements".byteInputStream(), name).title)
+        assertEquals("Untitled ride", RideCsvParser.parse(measurements.byteInputStream(), name).title)
+    }
+
+    @Test
+    fun riderAndBikeMetadataReachSummaryAndTextExports() {
+        val ride = analyze("""
+            Vehicle Nickname,"Z900, 日本 🏍️"
+            Comment,Ignored
+            UserAccount Name, José
+            Title,Metadata ride
+            elapsed_msec,engine_RPM,wheel_speed(km/h),gear_position,gps_latitude,gps_longitude,water_temperature(℃)
+            0,1200,0,N,-34,-58,80
+            1000,1400,0,N,-34,-58,80
+        """)
+        assertEquals("José", ride.rider)
+        assertEquals("Z900, 日本 🏍️", ride.bike)
+        assertEquals(listOf("Rider", "Bike"), RideReport.metrics(ride).take(2).map { it.label })
+        assertTrue(RideReport.plainText(ride).contains("Rider: José"))
+        assertTrue(RideReport.messageText(ride).contains("*Bike*: Z900, 日本 🏍️"))
+        assertTrue(ride.warnings.isEmpty())
+    }
+
+    @Test
+    fun missingOrBlankRiderAndBikeAreUnavailableWithoutMetadataWarnings() {
+        val measurements = "elapsed_msec,engine_RPM,wheel_speed(km/h),gear_position,gps_latitude,gps_longitude,water_temperature(℃)\n0,1200,0,N,-34,-58,80\n1000,1400,0,N,-34,-58,80"
+        for (metadata in listOf("", "UserAccount Name,  \nVehicle Nickname,\n")) {
+            val ride = analyze(metadata + measurements)
+            assertNull(ride.rider)
+            assertNull(ride.bike)
+            assertEquals(listOf("Unavailable", "Unavailable"), RideReport.metrics(ride).take(2).map { it.value })
+            assertTrue(ride.warnings.isEmpty())
+        }
+    }
+
+    @Test
     fun summaryExportsOnlySummaryAndGearTableAlignsNumbers() {
         val ride = analyze("Title,Message ride\nelapsed_msec,engine_RPM,wheel_speed(km/h),gear_position\n0,12000,179,1\n1000,900,9,2")
         val message = RideReport.messageText(ride)
@@ -116,7 +173,7 @@ class RideLogTest {
         assertEquals(6.0, ride.totalSeconds, 0.00001)
         assertEquals(5.0, ride.movingSeconds!!, 0.00001)
         assertEquals(80.0, ride.distanceMeters!!, 0.00001)
-        assertEquals(500.0, ride.idle!!, 0.00001)
+        assertEquals(1000.0, ride.idle!!, 0.00001)
         assertEquals(54.0, ride.average!!, 0.00001)
         assertEquals(54.0, ride.median!!, 0.00001)
         assertEquals(72.0, ride.speed!!.value, 0.00001)
@@ -174,11 +231,38 @@ class RideLogTest {
             0,0,1000,1
             5000,0,1200,N
         """)
-        assertEquals(1100.0, ride.idle!!, 0.00001)
+        assertEquals(1200.0, ride.idle!!, 0.00001)
         assertEquals(0.0, ride.movingSeconds!!, 0.00001)
         assertNull(ride.average)
         assertNull(ride.median)
         assertEquals(0.0, ride.acceleration!!.value, 0.00001)
+    }
+
+    @Test
+    fun idleRequiresStoppedNeutralAndRunningEngineWithoutTimeWeighting() {
+        val ride = analyze("""
+            elapsed_msec,wheel_speed(km/h),engine_RPM,gear_position
+            0,0,1000,N
+            1000,0,0,N
+            2000,0,500,1
+            3000,1,3000,N
+            4000,0,500,Error
+            5000,0,500,
+            10000,0,1400,N
+        """)
+        assertEquals(1200.0, ride.idle!!, 0.00001)
+        assertFalse(ride.warnings.any { it.contains("gear", ignoreCase = true) })
+    }
+
+    @Test
+    fun idleIsUnavailableWithoutQualifyingSamplesOrRequiredFields() {
+        val header = "elapsed_msec,wheel_speed(km/h),engine_RPM,gear_position"
+        assertNull(analyze("$header\n0,0,0,N\n1000,0,1200,1").idle)
+        assertNull(analyze("$header\n0,0,1200,N\n1000,invalid,2000,1").idle)
+        assertNull(analyze("$header\n0,0,1200,N\n1000,20,invalid,1").idle)
+        assertNull(analyze("elapsed_msec,wheel_speed(km/h),engine_RPM\n0,0,1200\n1000,0,1400").idle)
+        assertNull(analyze("elapsed_msec,wheel_speed(km/h),gear_position\n0,0,N\n1000,0,N").idle)
+        assertNull(analyze("elapsed_msec,engine_RPM,gear_position\n0,1200,N\n1000,1400,N").idle)
     }
 
     @Test

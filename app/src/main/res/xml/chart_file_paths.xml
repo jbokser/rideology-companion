@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="zip_exports" path="zip_exports/" />
+    <cache-path name="csv_exports" path="csv_exports/" />
     <cache-path name="chart_exports" path="chart_exports/" />
 </paths>

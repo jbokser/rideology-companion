@@ -65,7 +65,7 @@ fun ChartExportMenu(ride: RideSummary, kind: ChartImageKind, onCopy: (() -> Unit
         if (granted) export(true) else Toast.makeText(context, "Storage permission is required to save to the gallery on this Android version.", Toast.LENGTH_LONG).show()
     }
     val hasData = when (kind) {
-        ChartImageKind.SUMMARY, ChartImageKind.GEARS -> true
+        ChartImageKind.SUMMARY, ChartImageKind.GEARS, ChartImageKind.HISTORICAL_GEARS -> true
         ChartImageKind.SPEED -> ride.telemetry?.maximumSpeed != null && ride.telemetry.intervals.isNotEmpty()
         ChartImageKind.RPM -> ride.telemetry?.maximumRpm != null && ride.telemetry.intervals.isNotEmpty()
         ChartImageKind.TELEMETRY -> ride.telemetry?.intervals?.isNotEmpty() == true
@@ -74,7 +74,8 @@ fun ChartExportMenu(ride: RideSummary, kind: ChartImageKind, onCopy: (() -> Unit
     Box {
         IconButton(onClick = { expanded = true }, enabled = hasData && !busy) {
             if (busy) CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
-            else Icon(painterResource(R.drawable.ic_share), contentDescription = if (kind == ChartImageKind.SUMMARY) "Share ride summary" else if (kind == ChartImageKind.GEARS) "Share max for each gear" else "Share ${kind.label} chart")
+            else Icon(painterResource(R.drawable.ic_share), contentDescription = if (kind == ChartImageKind.SUMMARY) "Share ride summary" else if (kind == ChartImageKind.GEARS) "Share max for each gear" else "Share ${kind.label} chart",
+                tint = MaterialTheme.colorScheme.primary)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false },
             modifier = Modifier.border(BorderStroke(1.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(2.dp)),

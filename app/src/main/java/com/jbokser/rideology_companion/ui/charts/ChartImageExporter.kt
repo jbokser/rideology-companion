@@ -29,12 +29,12 @@ import java.io.File
 import java.util.UUID
 
 enum class ChartImageKind(val label: String, val filePrefix: String) {
-    SUMMARY("Ride summary", "summary"), GEARS("Max for each gear", "gears"), TELEMETRY("Telemetry", "telemetry"), DISTRIBUTION("Speed distribution", "speed_distribution"), SPEED("Speed", "speed"), RPM("Engine RPM", "rpm")
+    SUMMARY("Ride summary", "summary"), GEARS("Max for each gear", "gears"), HISTORICAL_GEARS("Historical max for each gear", "historical_gears"), TELEMETRY("Telemetry", "telemetry"), DISTRIBUTION("Speed distribution", "speed_distribution"), SPEED("Speed", "speed"), RPM("Engine RPM", "rpm")
 }
 
 object ChartImageExporter {
     fun render(context: Context, ride: RideSummary, kind: ChartImageKind): Bitmap {
-        if (kind == ChartImageKind.SUMMARY || kind == ChartImageKind.GEARS) return renderReport(context, ride, kind)
+        if (kind == ChartImageKind.SUMMARY || kind == ChartImageKind.GEARS || kind == ChartImageKind.HISTORICAL_GEARS) return renderReport(context, ride, kind)
         val telemetry = requireNotNull(ride.telemetry) { "No telemetry data is available." }
         val channels = when (kind) {
             ChartImageKind.TELEMETRY -> Channel.entries
@@ -110,29 +110,48 @@ object ChartImageExporter {
             textSize = 34f
             typeface = Typeface.MONOSPACE
         }
-        data class Line(val text: String, val x: Float, val size: Float, val green: Boolean = false, val icon: Int? = null, val cells: List<String>? = null) {
+        data class Line(val text: String, val x: Float, val size: Float, val green: Boolean = false, val icon: Int? = null, val cells: List<String>? = null, val theoretical: Boolean = false, val row: Int = 0, val centered: Boolean = false, val identity: Boolean = false) {
             val height: Float get() = size + 14f
         }
         val lines = buildList {
-            fun text(value: String, indent: Boolean = false, size: Float = 34f, green: Boolean = false, icon: Int? = null) {
+            fun text(value: String, indent: Boolean = false, size: Float = 34f, green: Boolean = false, icon: Int? = null, centered: Boolean = false) {
                 val x = if (icon != null || indent) 104f else 56f
                 paint.textSize = size
-                wrapTitle(value, paint, width - x - 56f).forEachIndexed { index, line -> add(Line(line, x, size, green, icon.takeIf { index == 0 })) }
+                wrapTitle(value, paint, width - x - 56f).forEachIndexed { index, line -> add(Line(line, x, size, green, icon.takeIf { index == 0 }, centered = centered)) }
             }
             fun space() { add(Line("", 56f, 14f)) }
-            text(ride.title)
-            space()
+            if (kind != ChartImageKind.HISTORICAL_GEARS) {
+                text(ride.title)
+                space()
+            }
             text(kind.label, green = true)
             space()
+            if (kind == ChartImageKind.HISTORICAL_GEARS) {
+                add(Line("", 56f, 28f, identity = true))
+                space()
+            }
             if (kind == ChartImageKind.SUMMARY) RideReport.metrics(ride).forEach { metric ->
                 text("${metric.label}:", icon = metricIcon(metric))
                 text(metric.value, indent = true)
                 metric.detail?.let { text(it, indent = true, size = 26f) }
                 space()
             }
-            if (kind == ChartImageKind.GEARS) {
+            if (kind == ChartImageKind.GEARS || kind == ChartImageKind.HISTORICAL_GEARS) {
                 if (ride.gears.isEmpty()) text("No valid numbered gear data available.")
-                else RideReport.gearRows(ride).forEach { add(Line("", 56f, 34f, cells = it)) }
+                else {
+                    if (kind == ChartImageKind.HISTORICAL_GEARS) space()
+                    RideReport.gearRows(ride).forEachIndexed { index, row -> add(Line("", 56f, 34f, cells = row, row = index)) }
+                }
+            }
+            if (kind == ChartImageKind.HISTORICAL_GEARS) {
+                space()
+                space()
+                text("Theoretical max speed for each gear", green = true)
+                text(RideReport.theoreticalSubtitle(ride), size = 26f)
+                space()
+                RideReport.theoreticalGearRows(ride).forEachIndexed { index, row ->
+                    add(Line("", 56f, 34f, cells = row, theoretical = true, row = index))
+                }
             }
         }
         val bitmap = Bitmap.createBitmap(width, (160f + lines.sumOf { it.height.toDouble() }).toInt(), Bitmap.Config.ARGB_8888)
@@ -144,32 +163,55 @@ object ChartImageExporter {
             paint.textSize = 26f
             canvas.drawText("Ride log analysis by @jbokser · v${com.jbokser.rideology_companion.BuildConfig.VERSION_NAME}", 56f, 100f, paint)
             paint.textSize = 34f
-            val columnWidths = if (kind == ChartImageKind.GEARS) (0..2).map { column ->
-                RideReport.gearRows(ride).maxOf { paint.measureText(it[column]) }
+            val theoreticalGears = RideReport.theoreticalGears(ride)
+            val columnWidths = if (kind == ChartImageKind.GEARS || kind == ChartImageKind.HISTORICAL_GEARS) (0..2).map { column ->
+                lines.mapNotNull { it.cells }.maxOfOrNull { paint.measureText(it[column]) } ?: 0f
             } else emptyList()
             val highestRpm = RideReport.highlightedGearRpm(ride)
-            var tableRow = 0
             var baseline = 160f
             lines.forEach { line ->
                 paint.textSize = line.size
                 paint.color = if (line.green) android.graphics.Color.rgb(102, 255, 0) else android.graphics.Color.WHITE
+                val textX = if (line.centered) (width - paint.measureText(line.text) - (if (line.icon != null) 48f else 0f)) / 2 +
+                    (if (line.icon != null) 48f else 0f) else line.x
                 line.icon?.let { resource ->
                     androidx.core.content.ContextCompat.getDrawable(context, resource)?.apply {
-                        setBounds(56, (baseline - 30).toInt(), 90, (baseline + 4).toInt())
+                        setBounds((textX - 48).toInt(), (baseline - 30).toInt(), (textX - 14).toInt(), (baseline + 4).toInt())
                         draw(canvas)
                     }
                 }
-                if (line.cells != null) {
+                if (line.identity) {
+                    val labels = listOf(
+                        com.jbokser.rideology_companion.R.drawable.ic_metric_helmet to (ride.rider ?: "Unavailable"),
+                        com.jbokser.rideology_companion.R.drawable.ic_metric_motorcycle to (ride.bike ?: "Unavailable")
+                    ).map { (icon, name) -> icon to name.replace(Regex("\\s+"), " ") }
+                    val groupWidth = labels.sumOf { (48f + paint.measureText(it.second)).toDouble() }.toFloat() + 32f
+                    val scale = minOf(1f, (width - 112f) / groupWidth)
+                    canvas.save()
+                    canvas.translate((width - groupWidth * scale) / 2f, baseline)
+                    canvas.scale(scale, scale)
+                    var left = 0f
+                    labels.forEach { (icon, name) ->
+                        androidx.core.content.ContextCompat.getDrawable(context, icon)?.apply {
+                            setBounds(left.toInt(), -26, (left + 34f).toInt(), 8)
+                            draw(canvas)
+                        }
+                        canvas.drawText(name, left + 48f, 0f, paint)
+                        left += 48f + paint.measureText(name) + 32f
+                    }
+                    canvas.restore()
+                } else if (line.cells != null) {
                     line.cells.forEachIndexed { column, value ->
                         val center = 56f + (width - 112f) / 3 * (column + 0.5f)
-                        val x = if (tableRow == 0) center - paint.measureText(value) / 2
+                        val x = if (line.row == 0) center - paint.measureText(value) / 2
                             else center + columnWidths[column] / 2 - paint.measureText(value)
-                        val highlight = column == 1 && tableRow > 0 && highestRpm != null && ride.gears[tableRow - 1].rpm == highestRpm
+                        val highlight = line.row > 0 && if (line.theoretical) {
+                            column == 1 && RideReport.theoreticalSpeedMatches(ride.gears[line.row - 1], theoreticalGears[line.row - 1])
+                        } else column == 1 && highestRpm != null && ride.gears[line.row - 1].rpm == highestRpm
                         paint.color = if (highlight) RideAmber.toArgb() else android.graphics.Color.WHITE
                         canvas.drawText(value, x, baseline, paint)
                     }
-                    tableRow++
-                } else canvas.drawText(line.text, line.x, baseline, paint)
+                } else canvas.drawText(line.text, textX, baseline, paint)
                 baseline += line.height
             }
             paint.color = android.graphics.Color.rgb(102, 255, 0)

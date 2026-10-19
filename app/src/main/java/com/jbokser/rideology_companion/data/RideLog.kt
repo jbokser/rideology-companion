@@ -17,7 +17,7 @@ data class Coordinate(val latitude: Double, val longitude: Double) {
     }
 }
 data class Sample(val time: Long, val rpm: Double?, val speed: Double?, val temperature: Double?, val gear: String?, val coordinate: Coordinate?)
-data class RideLog(val title: String, val samples: List<Sample>, val warnings: List<String>)
+data class RideLog(val title: String, val samples: List<Sample>, val warnings: List<String>, val rider: String? = null, val bike: String? = null)
 data class Peak(val value: Double, val seconds: Double, val meters: Double?)
 data class GearMaximum(val gear: String, val rpm: Double?, val speed: Double?)
 data class RideSummary(
@@ -26,13 +26,14 @@ data class RideSummary(
     val totalSeconds: Double, val movingSeconds: Double?, val distanceMeters: Double?,
     val start: Coordinate?, val end: Coordinate?, val straightMeters: Double?, val bearing: Double?,
     val gears: List<GearMaximum>, val warnings: List<String>, val maxSpeedLocation: Coordinate? = null,
-    val telemetry: RideTelemetry? = null, val speedDistribution: List<SpeedDistanceBin> = emptyList()
+    val telemetry: RideTelemetry? = null, val speedDistribution: List<SpeedDistanceBin> = emptyList(),
+    val rider: String? = null, val bike: String? = null
 )
 
 object RideCsvParser {
     private val fields = setOf("elapsed_msec", "gps_latitude", "gps_longitude", "water_temperature(℃)", "engine_RPM", "wheel_speed(km/h)", "gear_position")
 
-    fun parse(input: InputStream): RideLog {
+    fun parse(input: InputStream, sourceFileName: String? = null, savedTitle: String? = null): RideLog {
         val bytes = input.readBytes()
         fun decode(charset: Charset, action: CodingErrorAction = CodingErrorAction.REPORT): String = charset.newDecoder()
             .onMalformedInput(action)
@@ -49,11 +50,16 @@ object RideCsvParser {
         } catch (_: java.nio.charset.CharacterCodingException) {
             throw IllegalArgumentException("Unsupported CSV encoding. Use UTF-8, Shift-JIS, or UTF-16 with a byte order mark.")
         }
-        return parse(decoded.reader())
+        val candidate = sourceFileName?.let {
+            Regex("^Riding_(.+)_[0-9]{14}\\.csv$", RegexOption.IGNORE_CASE).matchEntire(it)?.groupValues?.get(1)
+        } ?: savedTitle
+        return parse(decoded.reader(), candidate)
     }
 
-    fun parse(reader: Reader): RideLog {
+    fun parse(reader: Reader, titleCandidate: String? = null): RideLog {
         var title = "Untitled ride"
+        var rider: String? = null
+        var bike: String? = null
         var header: Map<String, Int>? = null
         val samples = mutableListOf<Sample>()
         val warnings = linkedSetOf<String>()
@@ -61,7 +67,12 @@ object RideCsvParser {
             if (row.all { it.isBlank() }) continue
             if (header == null) {
                 val names = row.map { it.trim().removePrefix("\uFEFF") }
-                if (names.firstOrNull().equals("Title", true)) title = row.drop(1).joinToString(",").replace("\uFFFD", "").trim().ifEmpty { title }
+                val metadata = row.drop(1).joinToString(",").replace("\uFFFD", "").trim().takeIf { it.isNotEmpty() }
+                when (names.firstOrNull()?.lowercase(Locale.ROOT)) {
+                    "title" -> title = recoverTitle(row.drop(1).joinToString(",").trim(), titleCandidate).ifEmpty { title }
+                    "useraccount name" -> rider = metadata
+                    "vehicle nickname" -> bike = metadata
+                }
                 if ("elapsed_msec" in names) {
                     val selectedNames = names.filter { it in fields }
                     require(selectedNames.distinct().size == selectedNames.size) { "The data header contains duplicate measurement columns." }
@@ -93,7 +104,15 @@ object RideCsvParser {
         require(header != null) { "No data header containing elapsed_msec was found." }
         require(samples.size >= 2) { "At least two data samples are required." }
         if (samples.zipWithNext().any { (a, b) -> b.time - a.time > 2000 }) warnings.add("Sampling gaps detected. Interval estimates hold the preceding sample through each gap.")
-        return RideLog(title, samples, warnings.toList())
+        return RideLog(title, samples, warnings.toList(), rider, bike)
+    }
+
+    private fun recoverTitle(title: String, candidate: String?): String {
+        val cleaned = title.replace("\uFFFD", "").trim()
+        if ('\uFFFD' !in title || candidate.isNullOrBlank() || '\uFFFD' in candidate || cleaned.isEmpty()) return cleaned
+        // A damaged byte run can represent one character or a complete emoji sequence.
+        val pattern = title.split(Regex("\uFFFD+")).joinToString(".+") { Regex.escape(it) }
+        return if (Regex(pattern, RegexOption.DOT_MATCHES_ALL).matches(candidate)) candidate else cleaned
     }
 
     private fun records(reader: Reader): Sequence<List<String>> = sequence {
@@ -151,7 +170,10 @@ object RideAnalyzer {
                 matches.sumOf { intervals[it].first.speed!! / 3.6 * duration(intervals[it].first, intervals[it].second) })
         }
         val moving = if (speedValid) s.filter { it.speed!! != 0.0 }.map { it.speed!! }.sorted() else emptyList()
-        val idle = if (speedValid && s.all { it.rpm != null }) s.filter { it.speed == 0.0 }.map { it.rpm!! }.takeIf { it.isNotEmpty() }?.average() else null
+        val idle = if (speedValid && s.all { it.rpm != null }) {
+            s.filter { it.speed == 0.0 && it.gear == "N" && it.rpm!! > 0.0 }
+                .map { it.rpm!! }.takeIf { it.isNotEmpty() }?.average()
+        } else null
         val start = s.first().coordinate
         val end = s.last().coordinate
         val straight = if (start != null && end != null) gpsDistanceMeters(start, end) else null
@@ -167,7 +189,8 @@ object RideAnalyzer {
             (s.last().time - s.first().time) / 1000.0,
             if (speedValid) intervals.filter { it.first.speed != 0.0 }.sumOf { duration(it.first, it.second) } else null,
             if (speedValid) intervals.sumOf { it.first.speed!! / 3.6 * duration(it.first, it.second) } else null,
-            start, end, straight, bearing, gears, log.warnings, maxSpeedLocation, telemetry, RideChartCalculations.distribution(telemetry))
+            start, end, straight, bearing, gears, log.warnings, maxSpeedLocation, telemetry, RideChartCalculations.distribution(telemetry),
+            rider = log.rider, bike = log.bike)
     }
     private fun bearing(a: Coordinate, b: Coordinate): Double {
         val lat1 = Math.toRadians(a.latitude); val lat2 = Math.toRadians(b.latitude)

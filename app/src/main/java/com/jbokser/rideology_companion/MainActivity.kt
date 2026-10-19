@@ -20,8 +20,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.border
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.drag
@@ -57,9 +55,11 @@ import com.jbokser.rideology_companion.ui.charts.TextExportMenu
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.content.FileProvider
 import com.jbokser.rideology_companion.data.*
 import com.jbokser.rideology_companion.ui.theme.RideologyCompanionTheme
 import com.jbokser.rideology_companion.ui.theme.RideTitleStyle
+import com.jbokser.rideology_companion.ui.theme.CsvHistoryTitleStyle
 import com.jbokser.rideology_companion.ui.charts.TelemetryCharts
 import com.jbokser.rideology_companion.ui.charts.SpeedDistributionChart
 import com.jbokser.rideology_companion.ui.charts.ChartExportMenu
@@ -70,6 +70,10 @@ import com.jbokser.rideology_companion.ui.charts.Channel
 import com.jbokser.rideology_companion.ui.charts.TelemetryZoomScreen
 
 class MainActivity : ComponentActivity() {
+    private val gearRecordStore by lazy { GearRecordStore(java.io.File(filesDir, "gear_records")) }
+    private var gearRecords by mutableStateOf<List<GearRecord>>(emptyList())
+    private var recordMessage by mutableStateOf<String?>(null)
+    private var pendingRecordDelete by mutableStateOf<GearRecord?>(null)
     private val historyStore by lazy { CsvImportHistory(java.io.File(filesDir, "csv_history")) }
     private var historyEntries by mutableStateOf<List<CsvHistoryEntry>>(emptyList())
     private var showingHistory by mutableStateOf(false)
@@ -81,8 +85,157 @@ class MainActivity : ComponentActivity() {
     private var importJob: Job? = null
     private var sharedFiles by mutableStateOf<List<Pair<Uri, String>>>(emptyList())
 
+    private var pendingCsvSave: CsvHistoryEntry? = null
+    private val saveCsv = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        val entry = pendingCsvSave
+        pendingCsvSave = null
+        if (uri != null && entry != null) lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                        historyStore.file(entry).inputStream().use { it.copyTo(output) }
+                    } ?: throw IllegalArgumentException("The destination could not be opened.")
+                }
+                Toast.makeText(this@MainActivity, "CSV saved.", Toast.LENGTH_SHORT).show()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                Toast.makeText(this@MainActivity, "The CSV could not be saved.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun saveHistoryCsv(entry: CsvHistoryEntry) {
+        pendingCsvSave = entry
+        try {
+            saveCsv.launch(entry.exportFileName())
+        } catch (_: ActivityNotFoundException) {
+            pendingCsvSave = null
+            Toast.makeText(this, "No compatible file-saving application is installed.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun shareHistoryCsv(entry: CsvHistoryEntry) {
+        lifecycleScope.launch {
+            try {
+                val uri = withContext(Dispatchers.IO) {
+                    val directory = java.io.File(cacheDir, "csv_exports/${entry.id}")
+                    check(directory.isDirectory || directory.mkdirs())
+                    val file = java.io.File(directory, entry.exportFileName())
+                    historyStore.file(entry).copyTo(file, overwrite = true)
+                    FileProvider.getUriForFile(this@MainActivity, "$packageName.chartfiles", file)
+                }
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, entry.title)
+                    clipData = ClipData.newRawUri("CSV", uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(send, "Share CSV"))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: ActivityNotFoundException) {
+                Toast.makeText(this@MainActivity, "No compatible sharing application is installed.", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+                Toast.makeText(this@MainActivity, "The CSV could not be shared.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private var archiveBusy by mutableStateOf(false)
+    private var archiveMessage by mutableStateOf<String?>(null)
+    private val saveArchive = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) archiveTask {
+            withContext(Dispatchers.IO) {
+                contentResolver.openOutputStream(uri, "wt")?.use { CsvHistoryZip.export(it, historyStore) }
+                    ?: throw IllegalArgumentException("The destination could not be opened.")
+            }
+            archiveMessage = "All saved CSV files were exported to ZIP."
+        }
+    }
+    private val openArchive = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) archiveTask {
+            val broken = mutableListOf<String>()
+            val result = withContext(Dispatchers.IO) {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    CsvHistoryZip.import(input, historyStore) { ride ->
+                        ensureActive()
+                        val update = gearRecordStore.record(ride)
+                        if (update.broken.isNotEmpty()) broken += "${ride.rider}@${ride.bike}\n" + update.broken.joinToString("\n")
+                    }
+                } ?: throw IllegalArgumentException("The ZIP could not be opened.")
+            }
+            archiveMessage = "Imported ${result.imported} CSV files. Skipped ${result.skipped} invalid CSV files." +
+                if (broken.isNotEmpty()) "\n\nNew historical records\n\n" + broken.joinToString("\n\n") else ""
+        }
+    }
+
+    private fun archiveTask(action: suspend () -> Unit) {
+        if (archiveBusy) return
+        lifecycleScope.launch {
+            archiveBusy = true
+            try {
+                importJob?.join()
+                action()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (exception: Exception) {
+                archiveMessage = exception.message ?: "The ZIP operation could not be completed."
+            } finally {
+                try {
+                    val updated = withContext(Dispatchers.IO) { historyStore.entries() to gearRecordStore.entries() }
+                    historyEntries = updated.first
+                    gearRecords = updated.second
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    archiveMessage = "The saved CSV history or historical records could not be refreshed."
+                } finally {
+                    archiveBusy = false
+                }
+            }
+        }
+    }
+
+    private fun saveHistoryZip() {
+        try {
+            saveArchive.launch("rideology-csv-history.zip")
+        } catch (_: ActivityNotFoundException) {
+            archiveMessage = "No compatible file-saving application is installed."
+        }
+    }
+
+    private fun importHistoryZip() {
+        try {
+            openArchive.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+        } catch (_: ActivityNotFoundException) {
+            archiveMessage = "No compatible file-opening application is installed."
+        }
+    }
+
+    private fun shareHistoryZip() = archiveTask {
+        val uri = withContext(Dispatchers.IO) {
+            val directory = java.io.File(cacheDir, "zip_exports")
+            check(directory.isDirectory || directory.mkdirs())
+            val file = java.io.File.createTempFile("rideology-csv-history-", ".zip", directory)
+            file.outputStream().use { CsvHistoryZip.export(it, historyStore) }
+            FileProvider.getUriForFile(this@MainActivity, "$packageName.chartfiles", file)
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "application/zip"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newRawUri("CSV history ZIP", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(send, "Share CSV history ZIP"))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        savedInstanceState?.getString("pending_csv_id")?.let { id ->
+            savedInstanceState.getString("pending_csv_title")?.let { pendingCsvSave = CsvHistoryEntry(id, it) }
+        }
         zoomChannel = savedInstanceState?.getString("zoom_channel")?.let { value -> Channel.entries.find { it.name == value } }
         if (zoomChannel != null) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         enableEdgeToEdge(
@@ -98,6 +251,15 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this@MainActivity, "CSV history could not be read.", Toast.LENGTH_LONG).show()
             }
         }
+        lifecycleScope.launch {
+            try {
+                gearRecords = withContext(Dispatchers.IO) { gearRecordStore.entries() }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                Toast.makeText(this@MainActivity, "Historical gear records could not be read.", Toast.LENGTH_LONG).show()
+            }
+        }
         setContent {
             RideologyCompanionTheme {
                 val screenState = rememberSaveableStateHolder()
@@ -105,10 +267,41 @@ class MainActivity : ComponentActivity() {
                 val ride = summary
                 if (showingHistory) CsvHistoryScreen(historyEntries,
                     onBack = { showingHistory = false },
-                    onSelect = { load(Uri.fromFile(historyStore.file(it))) }, onDelete = ::deleteHistoryEntry)
+                    onSelect = { load(Uri.fromFile(historyStore.file(it))) }, onDelete = ::deleteHistoryEntry,
+                    onShare = ::shareHistoryCsv, onSave = ::saveHistoryCsv,
+                    onExportZip = ::saveHistoryZip, onShareZip = ::shareHistoryZip, onImportZip = ::importHistoryZip, archiveBusy = archiveBusy)
                 else if (zoom != null && ride != null) TelemetryZoomScreen(ride, zoom, ::closeZoom)
                 else screenState.SaveableStateProvider("ride") {
-                    RideScreen(summary, loading, error, ::load, ::openMap, ::copySummary, ::shareSummary, ::openRideology, ::openZoom, { showingHistory = true }, historyEntries.isNotEmpty())
+                    RideScreen(summary, loading, error, ::load, ::openMap, ::copySummary, ::shareSummary, ::openRideology, ::openZoom, { showingHistory = true }, gearRecords, { pendingRecordDelete = it })
+                }
+                if (archiveBusy) AlertDialog(onDismissRequest = {}, title = { Text("Processing CSV archive") },
+                    text = { LinearProgressIndicator(Modifier.fillMaxWidth()) }, confirmButton = {})
+                archiveMessage?.let { message ->
+                    AlertDialog(onDismissRequest = { archiveMessage = null }, title = { Text("CSV archive") },
+                        text = { Text(message, Modifier.verticalScroll(rememberScrollState())) },
+                        confirmButton = { TextButton(onClick = { archiveMessage = null }) { Text("OK") } })
+                }
+                recordMessage?.let { message ->
+                    AlertDialog(onDismissRequest = { recordMessage = null }, title = { Text("New historical records") },
+                        text = { Text(message, Modifier.verticalScroll(rememberScrollState())) },
+                        confirmButton = { TextButton(onClick = { recordMessage = null }) { Text("OK") } })
+                }
+                pendingRecordDelete?.let { record ->
+                    AlertDialog(onDismissRequest = { pendingRecordDelete = null }, title = { Text("Delete historical records?") },
+                        text = { Text("Delete all gear records for ${record.identity}? Future CSV imports can create them again.") },
+                        confirmButton = { TextButton(onClick = {
+                            pendingRecordDelete = null
+                            lifecycleScope.launch {
+                                try {
+                                    gearRecords = withContext(Dispatchers.IO) { gearRecordStore.delete(record) }
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    Toast.makeText(this@MainActivity, "Historical records could not be deleted.", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }) { Text("Delete") } },
+                        dismissButton = { TextButton(onClick = { pendingRecordDelete = null }) { Text("Cancel") } })
                 }
                 if (sharedFiles.isNotEmpty()) AlertDialog(
                     onDismissRequest = { sharedFiles = emptyList() },
@@ -146,6 +339,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        pendingCsvSave?.let {
+            outState.putString("pending_csv_id", it.id)
+            outState.putString("pending_csv_title", it.title)
+        }
         outState.putBoolean("showing_history", showingHistory)
         zoomChannel?.let { outState.putString("zoom_channel", it.name) }
         selectedUri?.let { outState.putString("selected_uri", it.toString()) }
@@ -198,15 +395,29 @@ class MainActivity : ComponentActivity() {
                 val result = withContext(Dispatchers.IO) {
                     val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalArgumentException("The selected file could not be opened.")
-                    val ride = RideAnalyzer.analyze(RideCsvParser.parse(bytes.inputStream()))
+                    val sourceName = runCatching {
+                        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                            if (it.moveToFirst()) it.getString(0) else null
+                        }
+                    }.getOrNull() ?: uri.lastPathSegment
+                    val savedTitle = historyEntries.firstOrNull { Uri.fromFile(historyStore.file(it)) == uri }?.title
+                    val ride = RideAnalyzer.analyze(RideCsvParser.parse(bytes.inputStream(), sourceName, savedTitle))
                     ensureActive()
                     val saved = runCatching {
                         val entry = historyStore.record(bytes, ride.title)
                         entry to historyStore.entries()
                     }
-                    ride to saved
+                    val records = runCatching { gearRecordStore.record(ride) }
+                    Triple(ride, saved, records)
                 }
                 summary = result.first
+                result.third.onSuccess { update ->
+                    gearRecords = update.records
+                    if (update.broken.isNotEmpty()) recordMessage =
+                        "${result.first.rider}@${result.first.bike}\n\n" + update.broken.joinToString("\n")
+                }.onFailure {
+                    Toast.makeText(this@MainActivity, "Historical gear records could not be saved.", Toast.LENGTH_LONG).show()
+                }
                 result.second.onSuccess { (entry, entries) ->
                     historyEntries = entries
                     selectedUri = Uri.fromFile(historyStore.file(entry))
@@ -305,7 +516,8 @@ class MainActivity : ComponentActivity() {
 private fun RideScreen(
     summary: RideSummary?, loading: Boolean, error: String?, onOpen: (Uri) -> Unit,
     onMap: (Coordinate) -> Unit, onCopy: (RideSummary) -> Unit, onShare: (RideSummary) -> Unit,
-    onRideology: () -> Unit, onZoom: (Channel) -> Unit, onHistory: () -> Unit, hasHistory: Boolean
+    onRideology: () -> Unit, onZoom: (Channel) -> Unit, onHistory: () -> Unit,
+    gearRecords: List<GearRecord>, onDeleteRecord: (GearRecord) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val resources = androidx.compose.ui.platform.LocalResources.current
@@ -344,11 +556,9 @@ private fun RideScreen(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
                     Text(if (summary == null) "Open CSV" else "Open another CSV", color = MaterialTheme.colorScheme.onSurface)
                 }
-                if (hasHistory) {
-                    OutlinedButton(onClick = onHistory,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
-                        Text("Previously loaded CSVs", color = MaterialTheme.colorScheme.onSurface)
-                    }
+                OutlinedButton(onClick = onHistory,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text("Previously loaded CSVs", color = MaterialTheme.colorScheme.onSurface)
                 }
                 OutlinedButton(onClick = onRideology,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
@@ -401,6 +611,36 @@ private fun RideScreen(
                     if (ride.warnings.isNotEmpty()) Panel("Data notes") { ride.warnings.forEach { Text(it) } }
 
                 }
+                gearRecords.forEach { record ->
+                    val historicalRide = record.summary()
+                    Panel("Historical max for each gear", action = {
+                        Row {
+                            ChartExportMenu(historicalRide, ChartImageKind.HISTORICAL_GEARS)
+                            IconButton(onClick = { onDeleteRecord(record) }) {
+                                Icon(painterResource(R.drawable.ic_delete), contentDescription = "Delete records for ${record.identity}",
+                                    tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }) {
+                        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf(R.drawable.ic_metric_helmet to record.rider, R.drawable.ic_metric_motorcycle to record.bike).forEach { (icon, name) ->
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Icon(painterResource(icon), contentDescription = if (icon == R.drawable.ic_metric_helmet) "Rider" else "Bike",
+                                        modifier = Modifier.size(18.dp))
+                                    Text(name, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        com.jbokser.rideology_companion.ui.charts.GearMaximaTable(historicalRide)
+                        Spacer(Modifier.height(12.dp))
+                        Text("Theoretical max speed for each gear", style = MaterialTheme.typography.titleSmall)
+                        Text(RideReport.theoreticalSubtitle(historicalRide), style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(8.dp))
+                        com.jbokser.rideology_companion.ui.charts.GearMaximaTable(historicalRide, theoretical = true)
+                    }
+                }
             }
             RideScrollbar(scrollState, Modifier.align(Alignment.CenterEnd).width(48.dp).fillMaxHeight().padding(vertical = 8.dp))
         }
@@ -410,9 +650,12 @@ private fun RideScreen(
 @Composable
 private fun CsvHistoryScreen(
     entries: List<CsvHistoryEntry>, onBack: () -> Unit,
-    onSelect: (CsvHistoryEntry) -> Unit, onDelete: (CsvHistoryEntry) -> Unit
+    onSelect: (CsvHistoryEntry) -> Unit, onDelete: (CsvHistoryEntry) -> Unit,
+    onShare: (CsvHistoryEntry) -> Unit, onSave: (CsvHistoryEntry) -> Unit,
+    onExportZip: () -> Unit, onShareZip: () -> Unit, onImportZip: () -> Unit, archiveBusy: Boolean
 ) {
     var pendingDelete by remember { mutableStateOf<CsvHistoryEntry?>(null) }
+    val scrollState = rememberScrollState()
     BackHandler(onBack = onBack)
     Scaffold { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
@@ -424,26 +667,74 @@ private fun CsvHistoryScreen(
                 }
                 Text("Previously loaded CSVs", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
                     textAlign = TextAlign.Center)
-                Spacer(Modifier.width(48.dp))
+                var archiveMenu by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { archiveMenu = true }, enabled = !archiveBusy) {
+                        Icon(painterResource(R.drawable.ic_archive), contentDescription = "CSV archive options",
+                            tint = MaterialTheme.colorScheme.primary)
+                    }
+                    DropdownMenu(expanded = archiveMenu, onDismissRequest = { archiveMenu = false },
+                        modifier = Modifier.border(BorderStroke(1.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(2.dp)),
+                        containerColor = MaterialTheme.colorScheme.surface) {
+                        DropdownMenuItem(text = { Text("Export as ZIP") }, enabled = entries.isNotEmpty(), onClick = {
+                            archiveMenu = false
+                            onExportZip()
+                        })
+                        DropdownMenuItem(text = { Text("Share as ZIP") }, enabled = entries.isNotEmpty(), onClick = {
+                            archiveMenu = false
+                            onShareZip()
+                        })
+                        DropdownMenuItem(text = { Text("Import from ZIP") }, onClick = {
+                            archiveMenu = false
+                            onImportZip()
+                        })
+                    }
+                }
             }
             HorizontalDivider(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                if (entries.isEmpty()) item { Text("No CSV files have been imported yet.") }
-                items(entries, key = { it.id }) { entry ->
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { onSelect(entry) }, modifier = Modifier.weight(1f),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp)) {
-                            Text(entry.title, style = RideTitleStyle, color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.fillMaxWidth())
-                        }
-                        IconButton(onClick = { pendingDelete = entry }) {
-                            Icon(painterResource(R.drawable.ic_delete), contentDescription = "Delete ${entry.title}",
-                                tint = MaterialTheme.colorScheme.primary)
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                Column(Modifier.fillMaxSize().padding(end = 32.dp).verticalScroll(scrollState).padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (entries.isEmpty()) Text("No CSV files have been imported yet.")
+                    entries.forEach { entry ->
+                        key(entry.id) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(0.dp)) {
+                                OutlinedButton(onClick = { onSelect(entry) }, modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp)) {
+                                    Text(entry.title, style = CsvHistoryTitleStyle, color = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.fillMaxWidth())
+                                }
+                                var exportMenu by remember { mutableStateOf(false) }
+                                Box {
+                                    IconButton(onClick = { exportMenu = true }) {
+                                        Icon(painterResource(R.drawable.ic_share), contentDescription = "Share ${entry.title}",
+                                            tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                    DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false },
+                                        modifier = Modifier.border(BorderStroke(1.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(2.dp)),
+                                        containerColor = MaterialTheme.colorScheme.surface) {
+                                        DropdownMenuItem(text = { Text("Share CSV") }, onClick = {
+                                            exportMenu = false
+                                            onShare(entry)
+                                        })
+                                        DropdownMenuItem(text = { Text("Save CSV") }, onClick = {
+                                            exportMenu = false
+                                            onSave(entry)
+                                        })
+                                    }
+                                }
+                                IconButton(onClick = { pendingDelete = entry }) {
+                                    Icon(painterResource(R.drawable.ic_delete), contentDescription = "Delete ${entry.title}",
+                                        tint = MaterialTheme.colorScheme.primary)
+                                }
+                            }
                         }
                     }
                 }
+                RideScrollbar(scrollState, Modifier.align(Alignment.CenterEnd).width(48.dp).fillMaxHeight().padding(vertical = 8.dp),
+                    description = "Scroll previously loaded CSVs", tag = "csv_history_scrollbar")
             }
         }
     }
@@ -503,13 +794,13 @@ private fun Location(label: String, coordinate: Coordinate?, onMap: (Coordinate)
 }
 
 @Composable
-private fun RideScrollbar(state: ScrollState, modifier: Modifier) {
+private fun RideScrollbar(state: ScrollState, modifier: Modifier, description: String = "Scroll ride report", tag: String = "ride_scrollbar") {
     if (state.maxValue <= 0 || state.maxValue == Int.MAX_VALUE || state.viewportSize <= 0) return
     val color = MaterialTheme.colorScheme.primary
     val scope = rememberCoroutineScope()
-    Canvas(modifier.testTag("ride_scrollbar")
+    Canvas(modifier.testTag(tag)
         .semantics {
-            contentDescription = "Scroll ride report"
+            contentDescription = description
             progressBarRangeInfo = ProgressBarRangeInfo(state.value.toFloat(), 0f..state.maxValue.toFloat())
             setProgress { target ->
                 scope.launch { state.scrollTo(target.toInt().coerceIn(0, state.maxValue)) }
