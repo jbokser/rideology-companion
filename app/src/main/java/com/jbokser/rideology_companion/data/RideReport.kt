@@ -1,6 +1,7 @@
 package com.jbokser.rideology_companion.data
 
 import java.util.Locale
+import kotlin.math.abs
 
 data class ReportMetric(val label: String, val value: String, val detail: String? = null)
 
@@ -63,6 +64,33 @@ object RideReport {
             listOf(it.gear, it.rpm?.let { rpm -> format(rpm, 0) } ?: "N/A",
                 it.speed?.let { speed -> format(speed, 1) } ?: "N/A")
     }
+
+    fun theoreticalGears(ride: RideSummary): List<GearMaximum> {
+        val maximumRpm = ride.gears.mapNotNull { it.rpm }.maxOrNull()?.takeIf { it > 0 }
+        return ride.gears.map { gear ->
+            val speed = if (maximumRpm != null && gear.rpm != null && gear.rpm > 0 && gear.speed != null && gear.speed > 0) {
+                (gear.speed * (maximumRpm / gear.rpm)).takeIf { it.isFinite() }
+            } else null
+            GearMaximum(gear.gear, maximumRpm, speed)
+        }
+    }
+
+    fun theoreticalSubtitle(ride: RideSummary): String {
+        val rpm = ride.gears.mapNotNull { it.rpm }.maxOrNull()?.takeIf { it > 0 }
+        return "Estimated from historical maxima at the highest recorded RPM: ${value(rpm, "rpm", 0)}."
+    }
+
+    fun theoreticalGearRows(ride: RideSummary): List<List<String>> =
+        listOf(listOf("Gear", "km/h", "Diff %")) + theoreticalGears(ride).zip(ride.gears).map { (estimated, historical) ->
+            val difference = if (estimated.speed != null && historical.speed != null && historical.speed > 0) {
+                ((estimated.speed - historical.speed) / historical.speed * 100).takeIf { it.isFinite() }
+            } else null
+            listOf(estimated.gear, estimated.speed?.let { format(it, 1) } ?: "N/A",
+                difference?.let { "${format(it, 1)}%" } ?: "N/A")
+        }
+
+    fun theoreticalSpeedMatches(historical: GearMaximum, theoretical: GearMaximum): Boolean =
+        historical.speed != null && theoretical.speed != null && abs(historical.speed - theoretical.speed) <= 1.0
 
     fun gearTable(ride: RideSummary): List<String> {
         val rows = gearRows(ride)

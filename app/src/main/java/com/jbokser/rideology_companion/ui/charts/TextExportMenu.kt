@@ -23,7 +23,8 @@ fun TextExportMenu(title: String, section: String, plainText: String, messageTex
     var expanded by remember { mutableStateOf(false) }
     Box {
         IconButton(onClick = { expanded = true }) {
-            Icon(painterResource(R.drawable.ic_share), contentDescription = "Share ${section.lowercase()}")
+            Icon(painterResource(R.drawable.ic_share), contentDescription = "Share ${section.lowercase()}",
+                tint = MaterialTheme.colorScheme.primary)
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false },
             modifier = Modifier.border(BorderStroke(1.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(2.dp)),

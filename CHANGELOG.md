@@ -6,6 +6,10 @@ Significant changes to Rideology Companion are listed here. Published releases a
 
 ### Added
 
+- Add theoretical per-gear speed estimates at the highest historical RPM, highlighting estimates within 1 km/h of recorded maxima in screen and JPG tables.
+
+- Persist historical maximum RPM and wheel speed per gear for each Rider/Bike pair, with record-breaking alerts, shareable tables, gallery exports, and deletion.
+
 - Share original CSV files or save a copy through the system file picker from import history.
 
 - Show Rider and Bike from CSV account and vehicle metadata in ride summaries.
@@ -15,6 +19,8 @@ Significant changes to Rideology Companion are listed here. Published releases a
 - Use smaller titles and tighter spacing in CSV import history while preserving accessible touch targets.
 
 ### Fixed
+
+- Keep Rider and Bike together with their icons in one centered row in historical gear JPG exports.
 
 - Reuse the existing application activity when opening or receiving CSV files from other apps instead of creating additional instances.
 
