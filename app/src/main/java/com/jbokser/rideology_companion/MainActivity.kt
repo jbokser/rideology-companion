@@ -57,9 +57,11 @@ import com.jbokser.rideology_companion.ui.charts.TextExportMenu
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.content.FileProvider
 import com.jbokser.rideology_companion.data.*
 import com.jbokser.rideology_companion.ui.theme.RideologyCompanionTheme
 import com.jbokser.rideology_companion.ui.theme.RideTitleStyle
+import com.jbokser.rideology_companion.ui.theme.CsvHistoryTitleStyle
 import com.jbokser.rideology_companion.ui.charts.TelemetryCharts
 import com.jbokser.rideology_companion.ui.charts.SpeedDistributionChart
 import com.jbokser.rideology_companion.ui.charts.ChartExportMenu
@@ -81,8 +83,72 @@ class MainActivity : ComponentActivity() {
     private var importJob: Job? = null
     private var sharedFiles by mutableStateOf<List<Pair<Uri, String>>>(emptyList())
 
+    private var pendingCsvSave: CsvHistoryEntry? = null
+    private val saveCsv = registerForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        val entry = pendingCsvSave
+        pendingCsvSave = null
+        if (uri != null && entry != null) lifecycleScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                        historyStore.file(entry).inputStream().use { it.copyTo(output) }
+                    } ?: throw IllegalArgumentException("The destination could not be opened.")
+                }
+                Toast.makeText(this@MainActivity, "CSV saved.", Toast.LENGTH_SHORT).show()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                Toast.makeText(this@MainActivity, "The CSV could not be saved.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun csvExportName(entry: CsvHistoryEntry): String =
+        entry.title.replace(Regex("[\\p{Cntrl}/\\\\:*?\"<>|]"), "_").trim().take(100).ifEmpty { "Ride log" } + ".csv"
+
+    private fun saveHistoryCsv(entry: CsvHistoryEntry) {
+        pendingCsvSave = entry
+        try {
+            saveCsv.launch(csvExportName(entry))
+        } catch (_: ActivityNotFoundException) {
+            pendingCsvSave = null
+            Toast.makeText(this, "No compatible file-saving application is installed.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun shareHistoryCsv(entry: CsvHistoryEntry) {
+        lifecycleScope.launch {
+            try {
+                val uri = withContext(Dispatchers.IO) {
+                    val directory = java.io.File(cacheDir, "csv_exports/${entry.id}")
+                    check(directory.isDirectory || directory.mkdirs())
+                    val file = java.io.File(directory, csvExportName(entry))
+                    historyStore.file(entry).copyTo(file, overwrite = true)
+                    FileProvider.getUriForFile(this@MainActivity, "$packageName.chartfiles", file)
+                }
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/csv"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, entry.title)
+                    clipData = ClipData.newRawUri("CSV", uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                startActivity(Intent.createChooser(send, "Share CSV"))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: ActivityNotFoundException) {
+                Toast.makeText(this@MainActivity, "No compatible sharing application is installed.", Toast.LENGTH_LONG).show()
+            } catch (_: Exception) {
+                Toast.makeText(this@MainActivity, "The CSV could not be shared.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        savedInstanceState?.getString("pending_csv_id")?.let { id ->
+            savedInstanceState.getString("pending_csv_title")?.let { pendingCsvSave = CsvHistoryEntry(id, it) }
+        }
         zoomChannel = savedInstanceState?.getString("zoom_channel")?.let { value -> Channel.entries.find { it.name == value } }
         if (zoomChannel != null) requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         enableEdgeToEdge(
@@ -105,7 +171,8 @@ class MainActivity : ComponentActivity() {
                 val ride = summary
                 if (showingHistory) CsvHistoryScreen(historyEntries,
                     onBack = { showingHistory = false },
-                    onSelect = { load(Uri.fromFile(historyStore.file(it))) }, onDelete = ::deleteHistoryEntry)
+                    onSelect = { load(Uri.fromFile(historyStore.file(it))) }, onDelete = ::deleteHistoryEntry,
+                    onShare = ::shareHistoryCsv, onSave = ::saveHistoryCsv)
                 else if (zoom != null && ride != null) TelemetryZoomScreen(ride, zoom, ::closeZoom)
                 else screenState.SaveableStateProvider("ride") {
                     RideScreen(summary, loading, error, ::load, ::openMap, ::copySummary, ::shareSummary, ::openRideology, ::openZoom, { showingHistory = true }, historyEntries.isNotEmpty())
@@ -146,6 +213,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        pendingCsvSave?.let {
+            outState.putString("pending_csv_id", it.id)
+            outState.putString("pending_csv_title", it.title)
+        }
         outState.putBoolean("showing_history", showingHistory)
         zoomChannel?.let { outState.putString("zoom_channel", it.name) }
         selectedUri?.let { outState.putString("selected_uri", it.toString()) }
@@ -416,7 +487,8 @@ private fun RideScreen(
 @Composable
 private fun CsvHistoryScreen(
     entries: List<CsvHistoryEntry>, onBack: () -> Unit,
-    onSelect: (CsvHistoryEntry) -> Unit, onDelete: (CsvHistoryEntry) -> Unit
+    onSelect: (CsvHistoryEntry) -> Unit, onDelete: (CsvHistoryEntry) -> Unit,
+    onShare: (CsvHistoryEntry) -> Unit, onSave: (CsvHistoryEntry) -> Unit
 ) {
     var pendingDelete by remember { mutableStateOf<CsvHistoryEntry?>(null) }
     BackHandler(onBack = onBack)
@@ -433,16 +505,36 @@ private fun CsvHistoryScreen(
                 Spacer(Modifier.width(48.dp))
             }
             HorizontalDivider(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
-            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (entries.isEmpty()) item { Text("No CSV files have been imported yet.") }
                 items(entries, key = { it.id }) { entry ->
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { onSelect(entry) }, modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(0.dp)) {
+                        OutlinedButton(onClick = { onSelect(entry) }, modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp)) {
-                            Text(entry.title, style = RideTitleStyle, color = MaterialTheme.colorScheme.onSurface,
+                            Text(entry.title, style = CsvHistoryTitleStyle, color = MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.fillMaxWidth())
+                        }
+                        var exportMenu by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { exportMenu = true }) {
+                                Icon(painterResource(R.drawable.ic_share), contentDescription = "Share ${entry.title}",
+                                    tint = MaterialTheme.colorScheme.primary)
+                            }
+                            DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false },
+                                modifier = Modifier.border(BorderStroke(1.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(2.dp)),
+                                containerColor = MaterialTheme.colorScheme.surface) {
+                                DropdownMenuItem(text = { Text("Share CSV") }, onClick = {
+                                    exportMenu = false
+                                    onShare(entry)
+                                })
+                                DropdownMenuItem(text = { Text("Save CSV") }, onClick = {
+                                    exportMenu = false
+                                    onSave(entry)
+                                })
+                            }
                         }
                         IconButton(onClick = { pendingDelete = entry }) {
                             Icon(painterResource(R.drawable.ic_delete), contentDescription = "Delete ${entry.title}",

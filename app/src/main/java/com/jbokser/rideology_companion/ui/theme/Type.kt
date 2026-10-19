@@ -17,6 +17,8 @@ val RideTitleStyle = defaults.titleLarge.copy(
         paragraphStyle = PlatformParagraphStyle(EmojiSupportMatch.All, includeFontPadding = true)
     )
 )
+val CsvHistoryTitleStyle = RideTitleStyle.copy(fontSize = 18.sp, lineHeight = 24.sp)
+
 val Typography = Typography(
     headlineMedium = defaults.headlineMedium.copy(fontFamily = FontFamily.Monospace),
     titleLarge = defaults.titleLarge.copy(fontFamily = FontFamily.Monospace),

@@ -6,7 +6,13 @@ Significant changes to Rideology Companion are listed here. Published releases a
 
 ### Added
 
+- Share original CSV files or save a copy through the system file picker from import history.
+
 - Show Rider and Bike from CSV account and vehicle metadata in ride summaries.
+
+### Changed
+
+- Use smaller titles and tighter spacing in CSV import history while preserving accessible touch targets.
 
 ### Fixed
 
