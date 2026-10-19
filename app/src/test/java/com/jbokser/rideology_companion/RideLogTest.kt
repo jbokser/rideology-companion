@@ -10,6 +10,37 @@ class RideLogTest {
     private fun analyze(csv: String) = RideAnalyzer.analyze(RideCsvParser.parse(StringReader(csv.trimIndent())))
 
     @Test
+    fun riderAndBikeMetadataReachSummaryAndTextExports() {
+        val ride = analyze("""
+            Vehicle Nickname,"Z900, 日本 🏍️"
+            Comment,Ignored
+            UserAccount Name, José
+            Title,Metadata ride
+            elapsed_msec,engine_RPM,wheel_speed(km/h),gear_position,gps_latitude,gps_longitude,water_temperature(℃)
+            0,1200,0,N,-34,-58,80
+            1000,1400,0,N,-34,-58,80
+        """)
+        assertEquals("José", ride.rider)
+        assertEquals("Z900, 日本 🏍️", ride.bike)
+        assertEquals(listOf("Rider", "Bike"), RideReport.metrics(ride).take(2).map { it.label })
+        assertTrue(RideReport.plainText(ride).contains("Rider: José"))
+        assertTrue(RideReport.messageText(ride).contains("*Bike*: Z900, 日本 🏍️"))
+        assertTrue(ride.warnings.isEmpty())
+    }
+
+    @Test
+    fun missingOrBlankRiderAndBikeAreUnavailableWithoutMetadataWarnings() {
+        val measurements = "elapsed_msec,engine_RPM,wheel_speed(km/h),gear_position,gps_latitude,gps_longitude,water_temperature(℃)\n0,1200,0,N,-34,-58,80\n1000,1400,0,N,-34,-58,80"
+        for (metadata in listOf("", "UserAccount Name,  \nVehicle Nickname,\n")) {
+            val ride = analyze(metadata + measurements)
+            assertNull(ride.rider)
+            assertNull(ride.bike)
+            assertEquals(listOf("Unavailable", "Unavailable"), RideReport.metrics(ride).take(2).map { it.value })
+            assertTrue(ride.warnings.isEmpty())
+        }
+    }
+
+    @Test
     fun summaryExportsOnlySummaryAndGearTableAlignsNumbers() {
         val ride = analyze("Title,Message ride\nelapsed_msec,engine_RPM,wheel_speed(km/h),gear_position\n0,12000,179,1\n1000,900,9,2")
         val message = RideReport.messageText(ride)

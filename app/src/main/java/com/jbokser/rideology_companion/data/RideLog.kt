@@ -17,7 +17,7 @@ data class Coordinate(val latitude: Double, val longitude: Double) {
     }
 }
 data class Sample(val time: Long, val rpm: Double?, val speed: Double?, val temperature: Double?, val gear: String?, val coordinate: Coordinate?)
-data class RideLog(val title: String, val samples: List<Sample>, val warnings: List<String>)
+data class RideLog(val title: String, val samples: List<Sample>, val warnings: List<String>, val rider: String? = null, val bike: String? = null)
 data class Peak(val value: Double, val seconds: Double, val meters: Double?)
 data class GearMaximum(val gear: String, val rpm: Double?, val speed: Double?)
 data class RideSummary(
@@ -26,7 +26,8 @@ data class RideSummary(
     val totalSeconds: Double, val movingSeconds: Double?, val distanceMeters: Double?,
     val start: Coordinate?, val end: Coordinate?, val straightMeters: Double?, val bearing: Double?,
     val gears: List<GearMaximum>, val warnings: List<String>, val maxSpeedLocation: Coordinate? = null,
-    val telemetry: RideTelemetry? = null, val speedDistribution: List<SpeedDistanceBin> = emptyList()
+    val telemetry: RideTelemetry? = null, val speedDistribution: List<SpeedDistanceBin> = emptyList(),
+    val rider: String? = null, val bike: String? = null
 )
 
 object RideCsvParser {
@@ -54,6 +55,8 @@ object RideCsvParser {
 
     fun parse(reader: Reader): RideLog {
         var title = "Untitled ride"
+        var rider: String? = null
+        var bike: String? = null
         var header: Map<String, Int>? = null
         val samples = mutableListOf<Sample>()
         val warnings = linkedSetOf<String>()
@@ -61,7 +64,12 @@ object RideCsvParser {
             if (row.all { it.isBlank() }) continue
             if (header == null) {
                 val names = row.map { it.trim().removePrefix("\uFEFF") }
-                if (names.firstOrNull().equals("Title", true)) title = row.drop(1).joinToString(",").replace("\uFFFD", "").trim().ifEmpty { title }
+                val metadata = row.drop(1).joinToString(",").replace("\uFFFD", "").trim().takeIf { it.isNotEmpty() }
+                when (names.firstOrNull()?.lowercase(Locale.ROOT)) {
+                    "title" -> title = metadata ?: title
+                    "useraccount name" -> rider = metadata
+                    "vehicle nickname" -> bike = metadata
+                }
                 if ("elapsed_msec" in names) {
                     val selectedNames = names.filter { it in fields }
                     require(selectedNames.distinct().size == selectedNames.size) { "The data header contains duplicate measurement columns." }
@@ -93,7 +101,7 @@ object RideCsvParser {
         require(header != null) { "No data header containing elapsed_msec was found." }
         require(samples.size >= 2) { "At least two data samples are required." }
         if (samples.zipWithNext().any { (a, b) -> b.time - a.time > 2000 }) warnings.add("Sampling gaps detected. Interval estimates hold the preceding sample through each gap.")
-        return RideLog(title, samples, warnings.toList())
+        return RideLog(title, samples, warnings.toList(), rider, bike)
     }
 
     private fun records(reader: Reader): Sequence<List<String>> = sequence {
@@ -170,7 +178,8 @@ object RideAnalyzer {
             (s.last().time - s.first().time) / 1000.0,
             if (speedValid) intervals.filter { it.first.speed != 0.0 }.sumOf { duration(it.first, it.second) } else null,
             if (speedValid) intervals.sumOf { it.first.speed!! / 3.6 * duration(it.first, it.second) } else null,
-            start, end, straight, bearing, gears, log.warnings, maxSpeedLocation, telemetry, RideChartCalculations.distribution(telemetry))
+            start, end, straight, bearing, gears, log.warnings, maxSpeedLocation, telemetry, RideChartCalculations.distribution(telemetry),
+            rider = log.rider, bike = log.bike)
     }
     private fun bearing(a: Coordinate, b: Coordinate): Double {
         val lat1 = Math.toRadians(a.latitude); val lat2 = Math.toRadians(b.latitude)

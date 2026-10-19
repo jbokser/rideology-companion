@@ -45,6 +45,7 @@
 - Support CSV files opened by the user and CSV files received through Android's share flow from RIDEOLOGY. Both entry points must use the same parsing and analysis logic.
 - Treat the export format as evolving: columns may be added, removed, or reordered, and the number of metadata or header lines and data rows may vary.
 - Identify the data header and map columns by their names, rather than relying on fixed column positions or a fixed number of preceding lines. Read relevant metadata, such as the ride title, when available.
+- Map the optional CSV metadata `UserAccount Name` to `Rider` and `Vehicle Nickname` to `Bike` in summaries and exports. Display unavailable metadata as `Unavailable` without adding data-quality notes.
 - Extract and retain only the fields needed by the implemented analyses. Ignore unused columns; do not require an exact match to the complete sample schema.
 - When adding or changing an analysis, review which source fields it requires and update the selected fields and their documented mapping accordingly. Do not assume that previously ignored fields are available in the parsed data.
 - Validate the fields required by each analysis. If fields are missing or invalid, report the affected metrics as unavailable or explain why the file cannot be processed; never silently substitute zero values.

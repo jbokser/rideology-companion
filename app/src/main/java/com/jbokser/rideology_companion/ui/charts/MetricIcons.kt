@@ -4,6 +4,8 @@ import com.jbokser.rideology_companion.R
 import com.jbokser.rideology_companion.data.ReportMetric
 
 internal fun metricIcon(metric: ReportMetric): Int = when {
+    metric.label == "Rider" -> R.drawable.ic_metric_helmet
+    metric.label == "Bike" -> R.drawable.ic_metric_motorcycle
     metric.label.contains("temperature") -> R.drawable.ic_metric_temperature
     metric.label.contains("time", ignoreCase = true) -> R.drawable.ic_metric_time
     metric.label == "Course" -> R.drawable.ic_metric_compass

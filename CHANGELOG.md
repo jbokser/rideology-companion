@@ -4,6 +4,10 @@ Significant changes to Rideology Companion are listed here. Published releases a
 
 ## Unreleased
 
+### Added
+
+- Show Rider and Bike from CSV account and vehicle metadata in ride summaries.
+
 ### Fixed
 
 - Calculate average idle engine speed only from stationary samples in neutral with the engine running, excluding zero RPM and samples in other gears that could distort the result.

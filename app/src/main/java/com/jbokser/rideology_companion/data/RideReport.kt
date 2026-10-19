@@ -6,6 +6,8 @@ data class ReportMetric(val label: String, val value: String, val detail: String
 
 object RideReport {
     fun metrics(ride: RideSummary): List<ReportMetric> = listOf(
+        ReportMetric("Rider", ride.rider ?: "Unavailable"),
+        ReportMetric("Bike", ride.bike ?: "Unavailable"),
         peak("Max engine speed", ride.engine, "rpm", 0),
         peak("Max wheel speed", ride.speed, "km/h", 1),
         peak("Max acceleration", ride.acceleration, "g", 2),
