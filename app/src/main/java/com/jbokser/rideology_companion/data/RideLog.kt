@@ -151,7 +151,10 @@ object RideAnalyzer {
                 matches.sumOf { intervals[it].first.speed!! / 3.6 * duration(intervals[it].first, intervals[it].second) })
         }
         val moving = if (speedValid) s.filter { it.speed!! != 0.0 }.map { it.speed!! }.sorted() else emptyList()
-        val idle = if (speedValid && s.all { it.rpm != null }) s.filter { it.speed == 0.0 }.map { it.rpm!! }.takeIf { it.isNotEmpty() }?.average() else null
+        val idle = if (speedValid && s.all { it.rpm != null }) {
+            s.filter { it.speed == 0.0 && it.gear == "N" && it.rpm!! > 0.0 }
+                .map { it.rpm!! }.takeIf { it.isNotEmpty() }?.average()
+        } else null
         val start = s.first().coordinate
         val end = s.last().coordinate
         val straight = if (start != null && end != null) gpsDistanceMeters(start, end) else null

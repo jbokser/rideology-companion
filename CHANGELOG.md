@@ -4,6 +4,10 @@ Significant changes to Rideology Companion are listed here. Published releases a
 
 ## Unreleased
 
+### Fixed
+
+- Calculate average idle engine speed only from stationary samples in neutral with the engine running, excluding zero RPM and samples in other gears that could distort the result.
+
 ## [v0.1b3](https://github.com/jbokser/rideology-companion/releases/tag/v0.1b3) — 2026-16-09 — Prerelease
 
 ### Changed

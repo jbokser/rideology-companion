@@ -9,7 +9,7 @@
 
 - Maintain a `README.md` at the repository root that explains the project, its current functionality, technology stack, and setup and build instructions.
 - Keep the README aligned with the implementation. Clearly distinguish implemented functionality from planned features.
-- Update the README when changes affect the project description, functionality, or setup and build instructions.
+- Update the README when changes affect the project description, functionality overview, or setup and build instructions. Changes to calculation rules alone do not require a README update; document those rules in AGENTS.md and summarize significant fixes in CHANGELOG.md. Modify README calculation details only when explicitly requested by the user.
 
 ## Project Changelog
 
@@ -49,10 +49,10 @@
 - When adding or changing an analysis, review which source fields it requires and update the selected fields and their documented mapping accordingly. Do not assume that previously ignored fields are available in the parsed data.
 - Validate the fields required by each analysis. If fields are missing or invalid, report the affected metrics as unavailable or explain why the file cannot be processed; never silently substitute zero values.
 - Use recorded timestamps for time-dependent calculations. Do not assume a fixed sampling interval or infer elapsed time from row counts; the supplied example includes gaps between samples.
-- Calculate average idle engine speed using only records where wheel speed equals zero, regardless of gear position. Do not add an engine RPM filter unless the requirements change.
+- Calculate average idle engine speed using only records where wheel speed equals zero, gear position is neutral (`N`), and engine RPM is greater than zero. Use a sample-based arithmetic mean; report the metric as unavailable when no records qualify.
 - Calculate average and median speed using only records where wheel speed is nonzero.
 - Report moving time separately from total time. Moving time considers only periods where wheel speed is nonzero and must be calculated from recorded timestamps, not sample counts.
-- Keep the example report as a presentation reference, not as hard-coded results. Follow the calculation conventions documented in the README, including sample-based averages, preceding-sample interval estimates, gap reporting, wheel-speed distance integration, and cumulative duration and distance at maxima. Update the documented conventions whenever calculation behavior changes.
+- Keep the example report as a presentation reference, not as hard-coded results. Use sample-based averages, preceding-sample interval estimates, gap reporting, wheel-speed distance integration, and cumulative duration and distance at maxima. Update the calculation rules in AGENTS.md whenever calculation behavior changes; do not update the README for these changes unless explicitly requested by the user.
 
 - Decode UTF-8 without replacing malformed bytes. Support Windows-31J/Shift-JIS exports and BOM-marked UTF-16 files, preserving Unicode titles whenever the source encoding supports them. Do not guess or reconstruct characters already replaced by the exporter. Malformed Windows-31J text must not block otherwise valid measurements: decode it with replacement markers, omit those markers from the displayed title, and retain normal validation for measurement fields.
 - Silently exclude unrecognized gear values such as `Error` from per-gear grouping. Do not announce these exclusions in the interface or shared report. Preserve valid gear groups and other analyses.
