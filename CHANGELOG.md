@@ -10,6 +10,8 @@ Significant changes to Rideology Companion are listed here. Published releases a
 
 ### Fixed
 
+- Recover damaged CSV header titles from matching export filenames while preserving intact header text and recovered titles when reopening import history.
+
 - Calculate average idle engine speed only from stationary samples in neutral with the engine running, excluding zero RPM and samples in other gears that could distort the result.
 
 ## [v0.1b3](https://github.com/jbokser/rideology-companion/releases/tag/v0.1b3) — 2026-16-09 — Prerelease

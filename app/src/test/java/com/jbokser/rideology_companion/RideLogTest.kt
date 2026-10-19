@@ -10,6 +10,32 @@ class RideLogTest {
     private fun analyze(csv: String) = RideAnalyzer.analyze(RideCsvParser.parse(StringReader(csv.trimIndent())))
 
     @Test
+    fun damagedTitleIsRecoveredOnlyFromMatchingExportFilename() {
+        val bytes = "Title,Caf".toByteArray() + byteArrayOf(0xfc.toByte(), 0xfc.toByte()) +
+            " YPF desde Tecn".toByteArray() + byteArrayOf(0xfc.toByte(), 0xfc.toByte()) +
+            "polis ".toByteArray() + byteArrayOf(0xfc.toByte(), 0xfc.toByte()) +
+            "\nelapsed_msec,wheel_speed(km/h)\n0,0\n1000,36".toByteArray()
+        val expected = "Café YPF desde Tecnópolis ☕"
+        val recovered = RideCsvParser.parse(bytes.inputStream(), "Riding_${expected}_20261019101528.csv")
+        assertEquals(expected, recovered.title)
+        assertEquals(36.0, recovered.samples.last().speed!!, 0.001)
+        assertEquals(expected, RideCsvParser.parse(bytes.inputStream(), "cached.csv", savedTitle = recovered.title).title)
+        for (name in listOf(null, "Riding_Café Shell desde Tecnópolis ☕_20261019101528.csv",
+            "${expected}.csv", "Riding_${expected}_bad.csv")) {
+            assertEquals("Caf YPF desde Tecnpolis",
+                RideCsvParser.parse(bytes.inputStream(), name).title)
+        }
+    }
+
+    @Test
+    fun validOrAbsentHeaderTitlesAreNotReplacedByFilename() {
+        val measurements = "elapsed_msec,wheel_speed(km/h)\n0,0\n1000,36"
+        val name = "Riding_Other ride_20261019101528.csv"
+        assertEquals("Café ☕", RideCsvParser.parse("Title,Café ☕\n$measurements".byteInputStream(), name).title)
+        assertEquals("Untitled ride", RideCsvParser.parse(measurements.byteInputStream(), name).title)
+    }
+
+    @Test
     fun riderAndBikeMetadataReachSummaryAndTextExports() {
         val ride = analyze("""
             Vehicle Nickname,"Z900, 日本 🏍️"

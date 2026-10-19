@@ -198,7 +198,13 @@ class MainActivity : ComponentActivity() {
                 val result = withContext(Dispatchers.IO) {
                     val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalArgumentException("The selected file could not be opened.")
-                    val ride = RideAnalyzer.analyze(RideCsvParser.parse(bytes.inputStream()))
+                    val sourceName = runCatching {
+                        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                            if (it.moveToFirst()) it.getString(0) else null
+                        }
+                    }.getOrNull() ?: uri.lastPathSegment
+                    val savedTitle = historyEntries.firstOrNull { Uri.fromFile(historyStore.file(it)) == uri }?.title
+                    val ride = RideAnalyzer.analyze(RideCsvParser.parse(bytes.inputStream(), sourceName, savedTitle))
                     ensureActive()
                     val saved = runCatching {
                         val entry = historyStore.record(bytes, ride.title)

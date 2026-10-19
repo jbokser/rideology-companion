@@ -33,7 +33,7 @@ data class RideSummary(
 object RideCsvParser {
     private val fields = setOf("elapsed_msec", "gps_latitude", "gps_longitude", "water_temperature(℃)", "engine_RPM", "wheel_speed(km/h)", "gear_position")
 
-    fun parse(input: InputStream): RideLog {
+    fun parse(input: InputStream, sourceFileName: String? = null, savedTitle: String? = null): RideLog {
         val bytes = input.readBytes()
         fun decode(charset: Charset, action: CodingErrorAction = CodingErrorAction.REPORT): String = charset.newDecoder()
             .onMalformedInput(action)
@@ -50,10 +50,13 @@ object RideCsvParser {
         } catch (_: java.nio.charset.CharacterCodingException) {
             throw IllegalArgumentException("Unsupported CSV encoding. Use UTF-8, Shift-JIS, or UTF-16 with a byte order mark.")
         }
-        return parse(decoded.reader())
+        val candidate = sourceFileName?.let {
+            Regex("^Riding_(.+)_[0-9]{14}\\.csv$", RegexOption.IGNORE_CASE).matchEntire(it)?.groupValues?.get(1)
+        } ?: savedTitle
+        return parse(decoded.reader(), candidate)
     }
 
-    fun parse(reader: Reader): RideLog {
+    fun parse(reader: Reader, titleCandidate: String? = null): RideLog {
         var title = "Untitled ride"
         var rider: String? = null
         var bike: String? = null
@@ -66,7 +69,7 @@ object RideCsvParser {
                 val names = row.map { it.trim().removePrefix("\uFEFF") }
                 val metadata = row.drop(1).joinToString(",").replace("\uFFFD", "").trim().takeIf { it.isNotEmpty() }
                 when (names.firstOrNull()?.lowercase(Locale.ROOT)) {
-                    "title" -> title = metadata ?: title
+                    "title" -> title = recoverTitle(row.drop(1).joinToString(",").trim(), titleCandidate).ifEmpty { title }
                     "useraccount name" -> rider = metadata
                     "vehicle nickname" -> bike = metadata
                 }
@@ -102,6 +105,14 @@ object RideCsvParser {
         require(samples.size >= 2) { "At least two data samples are required." }
         if (samples.zipWithNext().any { (a, b) -> b.time - a.time > 2000 }) warnings.add("Sampling gaps detected. Interval estimates hold the preceding sample through each gap.")
         return RideLog(title, samples, warnings.toList(), rider, bike)
+    }
+
+    private fun recoverTitle(title: String, candidate: String?): String {
+        val cleaned = title.replace("\uFFFD", "").trim()
+        if ('\uFFFD' !in title || candidate.isNullOrBlank() || '\uFFFD' in candidate || cleaned.isEmpty()) return cleaned
+        // A damaged byte run can represent one character or a complete emoji sequence.
+        val pattern = title.split(Regex("\uFFFD+")).joinToString(".+") { Regex.escape(it) }
+        return if (Regex(pattern, RegexOption.DOT_MATCHES_ALL).matches(candidate)) candidate else cleaned
     }
 
     private fun records(reader: Reader): Sequence<List<String>> = sequence {
