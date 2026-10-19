@@ -105,13 +105,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun csvExportName(entry: CsvHistoryEntry): String =
-        entry.title.replace(Regex("[\\p{Cntrl}/\\\\:*?\"<>|]"), "_").trim().take(100).ifEmpty { "Ride log" } + ".csv"
-
     private fun saveHistoryCsv(entry: CsvHistoryEntry) {
         pendingCsvSave = entry
         try {
-            saveCsv.launch(csvExportName(entry))
+            saveCsv.launch(entry.exportFileName())
         } catch (_: ActivityNotFoundException) {
             pendingCsvSave = null
             Toast.makeText(this, "No compatible file-saving application is installed.", Toast.LENGTH_LONG).show()
@@ -124,7 +121,7 @@ class MainActivity : ComponentActivity() {
                 val uri = withContext(Dispatchers.IO) {
                     val directory = java.io.File(cacheDir, "csv_exports/${entry.id}")
                     check(directory.isDirectory || directory.mkdirs())
-                    val file = java.io.File(directory, csvExportName(entry))
+                    val file = java.io.File(directory, entry.exportFileName())
                     historyStore.file(entry).copyTo(file, overwrite = true)
                     FileProvider.getUriForFile(this@MainActivity, "$packageName.chartfiles", file)
                 }
@@ -144,6 +141,94 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this@MainActivity, "The CSV could not be shared.", Toast.LENGTH_LONG).show()
             }
         }
+    }
+
+    private var archiveBusy by mutableStateOf(false)
+    private var archiveMessage by mutableStateOf<String?>(null)
+    private val saveArchive = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        if (uri != null) archiveTask {
+            withContext(Dispatchers.IO) {
+                contentResolver.openOutputStream(uri, "wt")?.use { CsvHistoryZip.export(it, historyStore) }
+                    ?: throw IllegalArgumentException("The destination could not be opened.")
+            }
+            archiveMessage = "All saved CSV files were exported to ZIP."
+        }
+    }
+    private val openArchive = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) archiveTask {
+            val broken = mutableListOf<String>()
+            val result = withContext(Dispatchers.IO) {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    CsvHistoryZip.import(input, historyStore) { ride ->
+                        ensureActive()
+                        val update = gearRecordStore.record(ride)
+                        if (update.broken.isNotEmpty()) broken += "${ride.rider}@${ride.bike}\n" + update.broken.joinToString("\n")
+                    }
+                } ?: throw IllegalArgumentException("The ZIP could not be opened.")
+            }
+            archiveMessage = "Imported ${result.imported} CSV files. Skipped ${result.skipped} invalid CSV files." +
+                if (broken.isNotEmpty()) "\n\nNew historical records\n\n" + broken.joinToString("\n\n") else ""
+        }
+    }
+
+    private fun archiveTask(action: suspend () -> Unit) {
+        if (archiveBusy) return
+        lifecycleScope.launch {
+            archiveBusy = true
+            try {
+                importJob?.join()
+                action()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (exception: Exception) {
+                archiveMessage = exception.message ?: "The ZIP operation could not be completed."
+            } finally {
+                try {
+                    val updated = withContext(Dispatchers.IO) { historyStore.entries() to gearRecordStore.entries() }
+                    historyEntries = updated.first
+                    gearRecords = updated.second
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    archiveMessage = "The saved CSV history or historical records could not be refreshed."
+                } finally {
+                    archiveBusy = false
+                }
+            }
+        }
+    }
+
+    private fun saveHistoryZip() {
+        try {
+            saveArchive.launch("rideology-csv-history.zip")
+        } catch (_: ActivityNotFoundException) {
+            archiveMessage = "No compatible file-saving application is installed."
+        }
+    }
+
+    private fun importHistoryZip() {
+        try {
+            openArchive.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+        } catch (_: ActivityNotFoundException) {
+            archiveMessage = "No compatible file-opening application is installed."
+        }
+    }
+
+    private fun shareHistoryZip() = archiveTask {
+        val uri = withContext(Dispatchers.IO) {
+            val directory = java.io.File(cacheDir, "zip_exports")
+            check(directory.isDirectory || directory.mkdirs())
+            val file = java.io.File.createTempFile("rideology-csv-history-", ".zip", directory)
+            file.outputStream().use { CsvHistoryZip.export(it, historyStore) }
+            FileProvider.getUriForFile(this@MainActivity, "$packageName.chartfiles", file)
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "application/zip"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newRawUri("CSV history ZIP", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(send, "Share CSV history ZIP"))
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -183,10 +268,18 @@ class MainActivity : ComponentActivity() {
                 if (showingHistory) CsvHistoryScreen(historyEntries,
                     onBack = { showingHistory = false },
                     onSelect = { load(Uri.fromFile(historyStore.file(it))) }, onDelete = ::deleteHistoryEntry,
-                    onShare = ::shareHistoryCsv, onSave = ::saveHistoryCsv)
+                    onShare = ::shareHistoryCsv, onSave = ::saveHistoryCsv,
+                    onExportZip = ::saveHistoryZip, onShareZip = ::shareHistoryZip, onImportZip = ::importHistoryZip, archiveBusy = archiveBusy)
                 else if (zoom != null && ride != null) TelemetryZoomScreen(ride, zoom, ::closeZoom)
                 else screenState.SaveableStateProvider("ride") {
-                    RideScreen(summary, loading, error, ::load, ::openMap, ::copySummary, ::shareSummary, ::openRideology, ::openZoom, { showingHistory = true }, historyEntries.isNotEmpty(), gearRecords, { pendingRecordDelete = it })
+                    RideScreen(summary, loading, error, ::load, ::openMap, ::copySummary, ::shareSummary, ::openRideology, ::openZoom, { showingHistory = true }, gearRecords, { pendingRecordDelete = it })
+                }
+                if (archiveBusy) AlertDialog(onDismissRequest = {}, title = { Text("Processing CSV archive") },
+                    text = { LinearProgressIndicator(Modifier.fillMaxWidth()) }, confirmButton = {})
+                archiveMessage?.let { message ->
+                    AlertDialog(onDismissRequest = { archiveMessage = null }, title = { Text("CSV archive") },
+                        text = { Text(message, Modifier.verticalScroll(rememberScrollState())) },
+                        confirmButton = { TextButton(onClick = { archiveMessage = null }) { Text("OK") } })
                 }
                 recordMessage?.let { message ->
                     AlertDialog(onDismissRequest = { recordMessage = null }, title = { Text("New historical records") },
@@ -423,7 +516,7 @@ class MainActivity : ComponentActivity() {
 private fun RideScreen(
     summary: RideSummary?, loading: Boolean, error: String?, onOpen: (Uri) -> Unit,
     onMap: (Coordinate) -> Unit, onCopy: (RideSummary) -> Unit, onShare: (RideSummary) -> Unit,
-    onRideology: () -> Unit, onZoom: (Channel) -> Unit, onHistory: () -> Unit, hasHistory: Boolean,
+    onRideology: () -> Unit, onZoom: (Channel) -> Unit, onHistory: () -> Unit,
     gearRecords: List<GearRecord>, onDeleteRecord: (GearRecord) -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -463,11 +556,9 @@ private fun RideScreen(
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
                     Text(if (summary == null) "Open CSV" else "Open another CSV", color = MaterialTheme.colorScheme.onSurface)
                 }
-                if (hasHistory) {
-                    OutlinedButton(onClick = onHistory,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
-                        Text("Previously loaded CSVs", color = MaterialTheme.colorScheme.onSurface)
-                    }
+                OutlinedButton(onClick = onHistory,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text("Previously loaded CSVs", color = MaterialTheme.colorScheme.onSurface)
                 }
                 OutlinedButton(onClick = onRideology,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(2.dp), modifier = Modifier.fillMaxWidth()) {
@@ -560,7 +651,8 @@ private fun RideScreen(
 private fun CsvHistoryScreen(
     entries: List<CsvHistoryEntry>, onBack: () -> Unit,
     onSelect: (CsvHistoryEntry) -> Unit, onDelete: (CsvHistoryEntry) -> Unit,
-    onShare: (CsvHistoryEntry) -> Unit, onSave: (CsvHistoryEntry) -> Unit
+    onShare: (CsvHistoryEntry) -> Unit, onSave: (CsvHistoryEntry) -> Unit,
+    onExportZip: () -> Unit, onShareZip: () -> Unit, onImportZip: () -> Unit, archiveBusy: Boolean
 ) {
     var pendingDelete by remember { mutableStateOf<CsvHistoryEntry?>(null) }
     val scrollState = rememberScrollState()
@@ -575,7 +667,29 @@ private fun CsvHistoryScreen(
                 }
                 Text("Previously loaded CSVs", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium,
                     textAlign = TextAlign.Center)
-                Spacer(Modifier.width(48.dp))
+                var archiveMenu by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { archiveMenu = true }, enabled = !archiveBusy) {
+                        Icon(painterResource(R.drawable.ic_archive), contentDescription = "CSV archive options",
+                            tint = MaterialTheme.colorScheme.primary)
+                    }
+                    DropdownMenu(expanded = archiveMenu, onDismissRequest = { archiveMenu = false },
+                        modifier = Modifier.border(BorderStroke(1.dp, MaterialTheme.colorScheme.primary), RoundedCornerShape(2.dp)),
+                        containerColor = MaterialTheme.colorScheme.surface) {
+                        DropdownMenuItem(text = { Text("Export as ZIP") }, enabled = entries.isNotEmpty(), onClick = {
+                            archiveMenu = false
+                            onExportZip()
+                        })
+                        DropdownMenuItem(text = { Text("Share as ZIP") }, enabled = entries.isNotEmpty(), onClick = {
+                            archiveMenu = false
+                            onShareZip()
+                        })
+                        DropdownMenuItem(text = { Text("Import from ZIP") }, onClick = {
+                            archiveMenu = false
+                            onImportZip()
+                        })
+                    }
+                }
             }
             HorizontalDivider(Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.primary)
             Box(Modifier.fillMaxWidth().weight(1f)) {

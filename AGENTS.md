@@ -42,6 +42,7 @@
 
 ## RIDEOLOGY CSV Import and Data Selection
 
+- ZIP history exports must contain only CSV files at the archive root, preserving original CSV bytes and using the same filename helper as individual CSV sharing. Add a numbered suffix only to resolve duplicate filenames. ZIP imports must accept CSV files at the archive root and use their filenames as verified title recovery candidates. ZIP imports must use the shared CSV parsing and analysis logic, deduplicate through import history, and update historical gear records. Ignore directories, nested files, and non-CSV archive entries; report invalid CSV counts. Read archive entries without extracting paths to disk and bound decompressed input sizes.
 - Support CSV files opened by the user and CSV files received through Android's share flow from RIDEOLOGY. Both entry points must use the same parsing and analysis logic.
 - Treat the export format as evolving: columns may be added, removed, or reordered, and the number of metadata or header lines and data rows may vary.
 - Identify the data header and map columns by their names, rather than relying on fixed column positions or a fixed number of preceding lines. Read relevant metadata, such as the ride title, when available.

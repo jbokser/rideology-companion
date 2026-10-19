@@ -6,6 +6,8 @@ Significant changes to Rideology Companion are listed here. Published releases a
 
 ### Added
 
+- Export or share all imported CSVs as a ZIP and import CSVs from ZIP archives through the history screen, preserving original CSV bytes. Archives contain only CSVs at the root with the same filenames as individual sharing; duplicate filenames receive numbered suffixes. Import reads root-level CSVs.
+
 - Add theoretical per-gear speed estimates at the highest historical RPM, highlighting estimates within 1 km/h of recorded maxima in screen and JPG tables.
 
 - Persist historical maximum RPM and wheel speed per gear for each Rider/Bike pair, with record-breaking alerts, shareable tables, gallery exports, and deletion.
@@ -15,6 +17,8 @@ Significant changes to Rideology Companion are listed here. Published releases a
 - Show Rider and Bike from CSV account and vehicle metadata in ride summaries.
 
 ### Changed
+
+- Always show the CSV history button so ZIP import is accessible before any CSV has been opened.
 
 - Use smaller titles and tighter spacing in CSV import history while preserving accessible touch targets.
 

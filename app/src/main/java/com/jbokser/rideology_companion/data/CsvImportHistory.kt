@@ -7,6 +7,9 @@ import java.security.MessageDigest
 
 data class CsvHistoryEntry(val id: String, val title: String)
 
+fun CsvHistoryEntry.exportFileName(): String =
+        title.replace(Regex("[\\p{Cntrl}/\\\\:*?\"<>|]"), "_").trim().take(100).ifEmpty { "Ride log" } + ".csv"
+
 /** Stores private CSV copies in most-recently-imported order. */
 class CsvImportHistory(private val directory: File) {
     private val index get() = File(directory, "index")
